@@ -48,7 +48,7 @@ This directory contains various DMC programs and related utilities.
 				`atom_data/B_Tzeta_STO` and used as input.
 		 
 	- `H2_Kolos_Roothaan.jl`
-		- DMC on H$_2$ molecule using the Kolos-Roothaan trial wave function.
+		- DMC on H_2 molecule using the Kolos-Roothaan trial wave function.
 			- Optimize parameter for fixed proton-proton distance Req=1.2 using\
 			`julia H2_Kolos_Roothaan.jl optimize=1 Req=1.2`\
 			copy the parameters to the code (which already has the data used in the book)
