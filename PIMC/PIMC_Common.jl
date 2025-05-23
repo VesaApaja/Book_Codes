@@ -95,25 +95,6 @@ if case==264
 end
 
 
-
-if case==1642
-    sys = :HeLiquid
-    restart = true
-    const N = 16
-    const bose = true 
-    const dim = 3
-    const pbc = true
-    const λ = 6.0612686
-    const τ_target = 0.05
-    const action = ChinAction
-    const worm_limit = 100.0
-    const swap_limit = 1e6
-    const Ntherm = 10000
-    const worm_K = 10  
-    const worm_C = 0.3
-end
-
-
 if case==3
     sys = :Noninteracting
     restart = false
