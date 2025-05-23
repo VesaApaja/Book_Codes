@@ -9,7 +9,7 @@ This directory contains a few short Python programs and a Julia PIMC program.
    start a PIMC simulation at T=1 (units depend on the system, usually K)
 # Modules
 - `PIMC_Common.jl`
-  - A few sets of parameters for the three test systems give in the book,\
+  - A few sets of parameters for the three test systems in the book
      - `case = 1` is two noninteracting bosons in a harmonic trap - exact solution is known.
 	 - `case = 216` liquid He with 16 atoms 
 	 - `case = 232` liquid He with 32 atoms 
