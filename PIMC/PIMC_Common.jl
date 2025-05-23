@@ -18,15 +18,12 @@ export AbstractAction, PrimitiveAction, ChinAction
 # ==========================
 # CHOOSE SYSTEM AND ACTION
 
-
-
-# help types for action choice
 abstract type AbstractAction end
 struct PrimitiveAction <: AbstractAction end
 struct ChinAction <: AbstractAction end
 
 
-case = 264
+case = 1
 
 if case==1
     sys = :HarmonicOscillator
@@ -36,8 +33,8 @@ if case==1
     const dim = 1
     const pbc = false
     const λ = 0.5
-    const τ_target = 0.1
-    const action = ChinAction
+    const τ_target = 0.05
+    const action = ChinAction # PrimitiveAction 
     const worm_limit = 1.e6
     const swap_limit = 1.e6
     const Ntherm = 10000
@@ -93,7 +90,7 @@ if case==264
     const worm_limit = 200.0
     const swap_limit = 1e6
     const Ntherm = 10000
-    const worm_K = 90 # 130 for T<2.0
+    const worm_K = 130 
     const worm_C = 0.6
 end
 

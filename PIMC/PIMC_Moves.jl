@@ -34,7 +34,7 @@ export init_stored
 # ======================
 
 @inline function init_stored(::PrimitiveAction, PIMC::t_pimc, beads::t_beads)
-    return init_stored_prim(PIMC, beads, id)
+    return init_stored_prim(PIMC, beads)
 end
 @inline function init_stored(::ChinAction, PIMC::t_pimc, beads::t_beads)
     return init_stored_chin(PIMC, beads)

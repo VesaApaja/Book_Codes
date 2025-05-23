@@ -264,11 +264,9 @@ function main()
     add_measurement!(PIMC, 10, :E_th, meas_E_th, 3, 100, dir*"E_th"*filesuffix)
     add_measurement!(PIMC, 10, :E_vir, meas_E_vir, 3, 100, dir*"E_vir"*filesuffix)
 
-    # worm debugging
+    # worm details
     add_measurement!(PIMC, 10, :head_tail_histogram, meas_head_tail_histogram, PIMC.M, 100, dir*"head_tail_histogram"*filesuffix)
-    # obdm measurement is called in worm, outside run_pimc
-    #add_measurement!(PIMC, 1, :obdm, meas_obdm, 101, 10, dir*"obdm"*filesuffix)
-
+    
     if bose && N>1
         add_measurement!(PIMC, 10, :cycle_count, meas_cycle_count, N, 100, dir*"cycle_count"*filesuffix)
         add_measurement!(PIMC, 10, :superfluid_fraction, meas_superfluid_fraction, 1, 100, dir*"rhos"*filesuffix)
@@ -281,15 +279,12 @@ function main()
     end
 
    
-   
-
-    
     # Moves:
     # ======
     add_move!(PIMC, 10, :bead_move, bead_move!)
     add_move!(PIMC, 10, :rigid_move, rigid_move!) 
     add_move!(PIMC, 60, :bisection_move, bisection_move!)
-    add_move!(PIMC, 30, :worm_move, worm_move!)
+    add_move!(PIMC, 30, :worm_move, worm_move!) # must have for bosons, only swap update has particle exchange
 
     # Reports
     # =======
@@ -299,19 +294,19 @@ function main()
     println("HDF5 output to file  $(PIMC.hdf5_file)")
     add_report!(PIMC, 1000, :Results_to_HDF5, pimc_results_to_hdf5)
 
+    
     # report parameters
     pimc_report(PIMC)
-
     
-    # delete old data files    
+    # delete old data files (hdf5 file will be overwritten anyhow)   
     for meas in PIMC.measurements          
         rm(meas.filename, force = true)
     end
-    rm("E_raw", force=true)
-    
+
+        
     pimc_results_to_hdf5(PIMC::t_pimc)
 
-    # initialize Action stored values - very important!
+    # initialize Action stored values (U is updated from these initial values)
     init_stored(PIMC, beads)
     
     # Warm-up with fast moves; skip if restart
