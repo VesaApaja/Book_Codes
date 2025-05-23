@@ -1,6 +1,6 @@
 # PIMC: Path Integral Monte Carlo Programs
 
-This directory contains a few short Python programs and a Julia PIMC program.
+This directory contains a few demonstratice Python programs and a Julia PIMC program.
 
 # Main Program
 - `PIMC_main.jl` is the main program for PIMC in the canonicals ensemble. 
