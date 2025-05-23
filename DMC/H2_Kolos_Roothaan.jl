@@ -3,6 +3,14 @@
 # H2 molecule
 # Trial wave function from Kolos and Roothaan, Rev. Mod. Phys. 32 205 (1960) 
 #
+# For example, run as
+# (i) optimization of parameters for proton-proton distance Req=1.2:
+#  julia H2_Kolos_Roothaan.jl optimize=1 Req=1.2
+# (ii) DMC, using time step 0.001 and proton-proton distance Req=1.2 
+#  julia H2_Kolos_Roothaan.jl tau=0.001 Req=1.2 
+#
+#  default Req=1.4 
+
 
 
 using Printf
@@ -48,7 +56,7 @@ mutable struct Params{T<:Real}
     c ::Vector{T}
 end
 
-# Pritn parameter in copy-paste format
+# Print parameters in copy-paste format
 function print_params(p::Params)
     print("params = Params(")
     @printf("%8.6f,\n", p.α)

@@ -3,6 +3,17 @@
 # Equilibrium of H2 molecule
 # trial wave function almost similar to Traynor, Anderson and Boghosian (TAB) 
 #
+#
+# Run, for example, as
+# (i) optimization of parameters:
+#  julia H2_DMC.jl optimize=1
+# (ii) DMC, using time step 0.001 
+#  julia H2_DMC.jl tau=0.001  
+#
+#  default Req=1.4 
+
+#
+#
 # my results:
 # for Params(1.282421875, 0.398046875, 1.3885, 11.24375)
 # VMC:  <E> =  -1.14651 +/- 0.00093
@@ -18,6 +29,7 @@ using Optim
 
 @inline norm(x) = sqrt(sum(abs2,x))
 
+# local modules
 push!(LOAD_PATH,".")
 using Common: VMC_Params, Walker, branch!
 using LinearOptimization
@@ -25,6 +37,8 @@ using QMC_Statistics
 using Utilities: argparse, num_check_EL, num_check_∇S, output_MCresult
 using VMCstep
 
+
+# parameters
 const dim=3
 const N=4
 # hbar^2/(2m) for electrons and protons
@@ -33,7 +47,7 @@ const D = [1/2, 1/(2*1836.152673426)]
 # Threads and RNG
 println("Using $(Threads.nthreads()) threads")
 # seed rng's using time in milliseconds
-base_number =floor(Int, time() * 1000) # floor needed to avoid InexactError
+base_number = floor(Int, time() * 1000) 
 base_number = 12345
 rngs = [MersenneTwister(base_number + i) for i in 1:Threads.nthreads()]
 
