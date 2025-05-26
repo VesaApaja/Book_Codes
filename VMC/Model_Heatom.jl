@@ -3,116 +3,53 @@ module Model_Heatom
 using StaticArrays
 using LinearAlgebra: norm
 
-export EL, drift, ln_psi2, Ψ, N, D, Eexact,  λ
+export EL, drift, ln_psi2, Ψ, N, dim, Eexact,  λ
 export V
 export trial, α, α12, β
 export Elocal_multi, ln_psi2_multi, drift_multi, psi_multi
 export Ψ_i_per_Ψ_multi
+export get_wave_function_params
 
 const λ = 0.5   # hbar^2/(2m) in a.u.
 
-const N = 2              # number of electrons
-const Z = 2
-const D = 3              # dimension  
-const Eexact = -2.903724377  # accurate ground state energy
+const N = 2                  # number of electrons
+const Z = 2                  # charge number
+const dim = 3                # dimension  
+const Eexact = -2.903724377  # exact ground state energy (non-relativistic, fixed nucleus)
 
 # =================
 # choose trial type
 # =================
-# pick one:
-#trial = "1S"    # Hydrogen 1S only
-#trial = "2par"  # α and α12
-trial = "3par"   # α, α12 and β
-#trial = "3par_opt" # α, α12 and β optimization
-# 
+   
 
-
-# trial wafe function parameters
-if trial=="1S"
-    # energy optimized, analytical:
-    const α = 27/16   # 1.6875
-    # Note: exact E = α^2 - 27/8*α 
-    # ignored:
-    const α12 = 0.0
-    const β = 0.0
+function get_wave_function_params(trial::Symbol)
+    @show trial
+    # returns named tuples
+    if trial === :energy_optimized_1S
+        # energy optimized, analytical:
+        # 27/16 = 1.6875
+        # exact E = α^2 - 27/8*α 
+        return (α = 27/16, α12 = 0.0, β = 0.0)
+    elseif trial === :cusp_condition_parameters 
+        # cusp condition values:
+        return (α = 2.0, α12 = 0.5, β = 0.0)
+    elseif trial === :three_parameters 
+        return (α = 1.0, α12 = 0.5, β = 0.1)
+    elseif trial === :initial_parameters_for_optimization
+        return (α = 2.0, α12 = 0.5, β = 0.2)
+    elseif trial === :energy_optimized_parameters
+        # <E> = -2.891115 +/- 0.000020 
+        return (α = 1.847529, α12 = 0.359070, β = 0.159321)
+    elseif trial === :variance_optimized_parameters
+        return (α = 1.949544, α12 = 0.526500, β = 0.430728)
+    else
+        error("Unknown trial: $trial")
+    end
 end
-if trial=="2par"
-    # cusp condition values:
-    const α = 2.0 
-    const α12 = 0.5
-    # ignored:
-    const β = 0.0
-end
-if trial=="3par"
-    # cusp condition values:
-    #const α = 2.0
-    #const α12 = 0.5
-    # energy optimized, correlated sampling:
-    #const β = 0.1437 #-2.878080 +/- 0.000100 
-    #const β = 0.143    # => -2.87820 ± 0.0001
-    #const β = 0.144   # => -2.87829 ± 0.0001
-    #const β = 0.145   # => -2.87814 ± 0.0001
-
-    # energy optimized, correlated sampling:
-    # all three free parameters
-    # <E> = -2.891115 +/- 0.000020 
-    const α = 1.847529
-    const α12 = 0.359070
-    const β = 0.159321
-    
-
-    #const α = 1.848602
-    #const α12 = 0.367626
-    #const β = 0.168144
-    
-    # energy optimized, correlated sampling:
-    #const α = 1.8487529
-    #const α12 = 0.359070
-    #const β = 0.159321
-    
-    # variance optimized, correlated sampling:
-    #const α = 1.952246
-    #const α12 = 0.458058
-    #const β = 0.308074
-    
-
-    # fixed α12, energy optimized
-    #const α = 1.842157
-    #const α12 = 0.50000
-    #const β = 0.348455
-    
-    # fixed α and α12, variance optimized
-    #const α = 2.0000
-    #const α12 = 0.50000
-    #const β = 0.326771
-    # fixed α and α12, energy optimized
-    #const α = 2.0000
-    #const α12 = 0.50000
-    #const β = 0.143799
-    
-end
-
-if trial=="3par_opt"
-    # cusp condition values:
-    #const α = 2.0
-    #const α12 = 0.5
-    #const β = 0.327
-    # energy optimized, correlated sampling:
-    const α = 1.847825
-    const α12 = 0.351858
-    const β = 0.150352
-
-    # variance optimized, correlated sampling:
-    #const α = 1.949544
-    #const α12 = 0.526500
-    #const β = 0.430728
-
-end
-
 
 
 # utility
-@inline function get_unitvecs(R::MMatrix{D,N,Float64})
+@inline function get_unitvecs(R::MMatrix{dim,N,Float64})
     vecr1 = R[:,1]
     r1 = norm(vecr1)  
     vecr2 = R[:,2]
@@ -132,7 +69,7 @@ function V(R ::MMatrix)
 end
 
 
-
+#=
 # Fixed wf parameter codes
 # ========================
 function EL(R ::MMatrix)
@@ -145,6 +82,7 @@ function EL(R ::MMatrix)
     ∇2S = -α*2/r1 -α*2/r2  + 4*α12/b^3*1/r12 
     EL = -0.5*(sum(∇S.^2) + ∇2S) - Z/r1 - Z/r2 + 1/r12
 end
+
 
 # 2∇S
 @inline function drift(R ::MMatrix)
@@ -171,6 +109,43 @@ function Ψ(R ::MMatrix)
     b = 1+β*r12
     exp(-α*(r1+r2) + α12*r12/b)
 end
+=#
+
+# three-parameter functions
+
+function Ψ(R::MMatrix, wf_params)
+    α, α12, β = wf_params
+    r12 = norm(R[:,1]-R[:,2])
+    r1 = norm(R[:,1])
+    r2 = norm(R[:,2])
+    b = 1+β*r12
+    exp(-α*(r1+r2) + α12*r12/b)
+end
+
+
+function EL(R::MMatrix, wf_params)
+    α, α12, β = wf_params
+    r12 = norm(R[:,1]-R[:,2])
+    r1  = norm(R[:,1])
+    r2  = norm(R[:,2])
+    hatr1, hatr2, hatr12 = get_unitvecs(R)
+    b = 1+β*r12
+    ∇S = 0.5*drift(R, wf_params)
+    ∇2S = -α*2/r1 -α*2/r2  + 4*α12/b^3*1/r12
+    EL = -0.5*(sum(∇S.^2) + ∇2S) - Z/r1 - Z/r2 + 1/r12
+end
+
+# 2∇S
+@inline function drift(R::MMatrix, wf_params)
+    α, α12, β = wf_params
+    hatr1, hatr2, hatr12 =  get_unitvecs(R)
+    r12 = norm(R[:,1]-R[:,2])
+    b = 1+β*r12    
+    ∇S = hcat(-α*hatr1 + α12/b^2*hatr12, -α*hatr2 - α12/b^2*hatr12)
+    2∇S
+end
+
+
 
 #=
 # Variable wf parameter codes
