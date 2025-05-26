@@ -11,7 +11,6 @@ H = -1/2* (nabla_1^2 + nabla_2^2) - 2/r1 - 2/r2 + 1/r12
 =#
 
 
-using Distributions
 using Printf
 using StaticArrays
 using Statistics
@@ -19,12 +18,13 @@ using LaTeXStrings
 
 using Plots
 
-using Optimization
+using Optimization, OptimizationNLopt, NLopt
 using Random
-using PRIMA
+#using PRIMA # May 2025: requires executable stack, which is disabled in many systems for security reasons
 
 # local modules:
 push!(LOAD_PATH,".")
+using Common
 using VMCstep
 using Model_Heatom
 using Utilities
@@ -32,59 +32,59 @@ using Utilities
 # Parameters
 #
 const Ntherm = 100 # thermalization steps
-const Nw = 10000000 # number of walkers used in correlated sampling
+const Nw = 1000000 # number of walkers used in correlated sampling
 
 mutable struct Walker
-    R     ::MMatrix{D,N,Float64}
+    R     ::MMatrix{dim,N,Float64}
     ψ     ::Float64
     E     ::Float64
 end
 
-#Random.seed!(123414) # optional: use same seed to get rep
- 
+#Random.seed!(123414) # For testing only
+
+ # global :
+vmc_params = VMC_Params(0,0,0.0)
+walker = Vector{Walker}(undef, 1) # dummy init
+
 
 # initialization 
-function init(vmc_params ::VMC_Params) ::Array{Walker,1}
+function init(vmc_params ::VMC_Params)
+    global walker
     println("init ",Nw," walkers")    
     # 
     # Initialize walkers
     #
-    walker = [Walker(zeros(Float64,D,N),0.0,0.0) for i in 1:Nw] # R, ψ=0, E=0
-    for iw in 1:Nw
-        ww = walker[iw]
-        R = @MMatrix rand(D,N)        # coordinates
-        ww.R = copy(R)
-        ww.ψ = ln_psi2(R)  # wave function (ln(psi^2))
-        ww.E = Elocal(R)        
-    end
+    R = @MMatrix rand(dim,N)     # coordinates
+    walker = [Walker(R, 0.0, 0.0) for i in 1:Nw] # R, ψ=0, E=0    
     
     vmc_params.Ntry=0
     vmc_params.Naccept=0
-    vmc_params.step = 3.1
-    walker
+    vmc_params.step = 3.1    
 end
-# global :
-vmc_params = VMC_Params(0,0,0.0)
-walker = walker = [Walker(rand(Float64,D,N),0.0,0.0) for i in 1:Nw] # R, ψ=0, E=0  
+
 
 # Correlated sampling functions
 # -----------------------------
-function generate_walkers()   
+function generate_walkers(wf_params::Vector{Float64})   
     # thermalization
+    Ψ_fixed_params(x) = Ψ(x, wf_params)
     for i in 1:Ntherm
-        vmc_step!(walker[1].R, vmc_params)      
+        vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)      
     end
     println("generating walkers")
     # generate Nw walkers
+    Eave = 0.0
     for iw = 1:Nw
         for i = 1:10 # run walker 1 for a while
-            vmc_step!(walker[1].R, vmc_params)            
+            vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
         end
-        ψ,E = vmc_step!(walker[1].R, vmc_params)            
+        ψ = vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
         walker[iw].R = copy(walker[1].R)
         walker[iw].ψ = ψ
-        walker[iw].E = E
+        walker[iw].E = EL(walker[1].R, wf_params)
+        Eave += walker[iw].E
     end
+    @printf("initial <E> = %15.5f\n", Eave/Nw) 
     println("done")
 end
     
@@ -92,8 +92,8 @@ function get_correlated_Eσ(wf_params)
     Esamples = Array{Float64, 1}(undef, Nw)
     ratios = Array{Float64, 1}(undef, Nw)
     for iw = 1:Nw
-        wratio = exp(ln_psi2(walker[iw].R, wf_params)-ln_psi2(walker[iw].R))
-        Esamples[iw] = Elocal(walker[iw].R, wf_params)* wratio
+        wratio = Ψ(walker[iw].R, wf_params)^2/walker[iw].ψ^2         
+        Esamples[iw] = EL(walker[iw].R, wf_params)* wratio
         ratios[iw] = wratio
     end
     r_ave = mean(ratios)
@@ -103,7 +103,7 @@ function get_correlated_Eσ(wf_params)
     for par in wf_params
         @printf("wf parameter %20.15f\n",par)
     end
-    @printf("E = %20.15f ± %20.15f  <φ_T ratio> = %20.15e\n", E_ave, σ, r_ave)
+    @printf("correlated energy = %20.15f ± %20.15f  <weight ratio> = %20.15e\n", E_ave, σ, r_ave)
     E_ave, σ
 end
 
@@ -123,8 +123,8 @@ function get_correlated_σ2(wf_params)
     σ2samples = Array{Float64, 1}(undef, Nw)
     ratios = Array{Float64, 1}(undef, Nw)    
     for iw = 1:Nw
-        wratio = exp(ln_psi2(walker[iw].R, wf_params)-ln_psi2(walker[iw].R))
-        σ2samples[iw] = (Elocal(walker[iw].R, wf_params)-Eguess)^2 * wratio
+        wratio = Ψ(walker[iw].R, wf_params)^2/walker[iw].ψ^2         
+        σ2samples[iw] = (EL(walker[iw].R, wf_params)-Eguess)^2 * wratio
         ratios[iw] = wratio
     end
     r_ave = mean(ratios)
@@ -152,68 +152,75 @@ function main()
     init(vmc_params)
    
     println("CORRELATED SAMPLING")
-    if trial!="3par_opt"
-        println("Use 3par_opt Model in VMC optimization runs")
-        exit()
-    end
-
-    
-    println("\nOptimization of E using algorithm\n")
-
-
-    # keep wf_params as Vector, bobyqa won't handle MVectors
-    u0 = [α, α12, β]  # start with values from Model
+    par = get_wave_function_params(:initial_parameters_for_optimization)
+    α = par.α
+    β = par.β
+    α12 = par.α12
+    println("\nOptimization of E\n")
+    # start with values from Model
+    u0 = [α, α12, β]   
     wf_params = copy(u0)  
 
-    println("start with paramaters = ", wf_params)
-    generate_walkers()  # generate walkers only *once*
+    println("start with parameters = ", wf_params)
+    generate_walkers(wf_params)  # generate walkers only *once*
 
+    E_u0, σ_u0 = get_correlated_Eσ(wf_params)
+    @printf("initial correlated energy %15.5f variance %15.5f\n", E_u0, σ_u0)
     # limits
     # optimize all parameters
-    #xl = [0.0, 0.0, 0.0]
-    #xu = [20.0, 20.0, 20.0]
+    xl = [0.0, 0.0, 0.0]
+    xu = [20.0, 20.0, 20.0]
     
     # optimize only α and β:
     #xl = [0.0, α12, 0.0]
     #xu = [3.0, α12+1e-5, 1.0]
     # optimize only β:
-    xl = [α, α12, 0.0]
-    xu = [α+1e-5, α12 + 1e-5, 1.0]  # algo needs finite range 
-    sol_Eopt , info = bobyqa(E_opt_correlated, u0; xl = xl, xu = xu)
+    #xl = [α, α12, 0.0]
+    #xu = [α+1e-5, α12 + 1e-5, 1.0]  # algorithm needs finite range
 
-    println("Energy minimum at wf parameter")
-    for s in sol_Eopt
-        @printf("%.6f\n",s)
-    end
+
+    # Define optimizer
+    n_parameters = 3
+    opt =  Opt(:LN_BOBYQA, n_parameters) 
+    lower_bounds!(opt, xl)
+    upper_bounds!(opt, xu)
+    xtol_rel!(opt, 1e-5)    # Relative tolerance on optimization parameters
+    maxeval!(opt, 100000)   # Maximum number of evaluations
+    
+    # Define objective
+    min_objective!(opt, (x, _) -> E_opt_correlated(x))
+
+    (E_ene_min, wf_params_ene_min, ret) = optimize(opt, u0)
+
+    # Output results
+    println("Optimized parameters: ", wf_params_ene_min)
+    println("Minimum value: ", E_ene_min)
+    println("Return code: ", ret)
         
     # Variance optimization
     # ---------------------
     # use same walkers as in energy optimization
        
 
-    println("\n\nOptimization of σ^2 using algorithm\n")
+    println("\n\nOptimization of σ^2\n")
     
     u0 = [α, α12, β] # start with values from Model
     wf_params = copy(u0)
-    println("start with paramaters = ", wf_params)
-    
-    sol_σ2 , info = bobyqa(σ2_opt_correlated, u0; xl = xl, xu = xu)
+    println("start with parematers = ", wf_params)
 
+    # Define objective
+    min_objective!(opt, (x, _) -> σ2_opt_correlated(x))
+
+    (σ2_min, wf_params_var_min, ret) = optimize(opt, u0)
+
+    # Output results
+    println("Optimized parameters: ", wf_params_var_min)
+    println("Minimum value: ", σ2_min)
+    println("Return code: ", ret)
+    
     println("\n\nRESULTS:")
-    println("Variance minimum at wf parameter")
-    for s in sol_σ2
-        @printf("%.6f\n",s)
-    end
-    wf_params = sol_σ2
-    get_correlated_Eσ(wf_params)
-
-    
-    println("\n\nEnergy minimum at wf parameter")
-    for s in sol_Eopt
-        @printf("%.6f\n",s)
-    end
-    wf_params = sol_Eopt
-    get_correlated_Eσ(wf_params)
+    println("Energy minimum:", E_ene_min," " , wf_params_ene_min )
+    println("Variance minimum:", σ2_min, " ", wf_params_var_min)
     
 end
 
