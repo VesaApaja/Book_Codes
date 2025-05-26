@@ -34,6 +34,10 @@ using Utilities
 const Ntherm = 100 # thermalization steps
 const Nw = 100000 # number of walkers used in correlated sampling
 
+# preallocated arrays
+Esamples = Vector{Float64}(undef, Nw)
+ratios = Vector{Float64}(undef, Nw)
+
 mutable struct Walker
     R     ::MMatrix{dim,N,Float64}
     ψ     ::Float64
@@ -62,8 +66,7 @@ function init(vmc_params::VMC_Params)
 end
 
 
-
-function generate_walkers(wf_params::Vector{Float64})       
+function generate_walkers(wf_params)       
     println("generating walkers with wf_params ",wf_params)
     # thermalization
     Ψ_fixed_params(x) = Ψ(x, wf_params)
@@ -82,12 +85,12 @@ function generate_walkers(wf_params::Vector{Float64})
         walker[iw].E = EL(walker[1].R, wf_params)
         Eave += walker[iw].E
     end
-    @printf("initial <E> = %15.5f\n", Eave/Nw) 
 end
-function get_Eσ(wf_params::Vector{Float64}, correlated::Bool)
-    Esamples = Array{Float64, 1}(undef, Nw)
+
+function get_Eσ(wf_params, correlated::Bool; Esamples = Esamples, ratios = ratios)
+    Esamples .= 0.0 
     if correlated        
-        ratios = Array{Float64, 1}(undef, Nw)
+        ratios .= 0.0 
         for iw = 1:Nw
             wratio = Ψ(walker[iw].R, wf_params)^2/walker[iw].ψ^2         
             Esamples[iw] = EL(walker[iw].R, wf_params)* wratio
@@ -103,9 +106,13 @@ function get_Eσ(wf_params::Vector{Float64}, correlated::Bool)
         E_ave = mean(Esamples)
     end    
     σ = std(Esamples)/sqrt(Nw)
+    println("wf parameters:")
     for par in wf_params
-        @printf("wf parameter %20.15f\n",par)
+        @printf("%20.15f  ", par)
     end
+    println()
+    
+
     if correlated
         @printf("CORRELATED SAMPLING <E> = %20.15f ± %20.15f  <weight ratio> = %20.15e\n", E_ave, σ, r_ave)
     else
@@ -123,7 +130,6 @@ function main()
    
     println("CORRELATED SAMPLING")
     par = get_wave_function_params(:initial_parameters_for_optimization)
-    wf_params = [par.α, par.α12, par.β]
     # seach limits
     β_min = 0.0
     β_max = 0.5
@@ -146,9 +152,9 @@ function main()
     # -------------------
     println("CORRELATED SAMPLING")
     
-    generate_walkers([par.α, par.α12, par.β])  # generate walkers only *once*
+    generate_walkers((par.α, par.α12, par.β))  # generate walkers only *once*
     for (i,β) in enumerate(βs)
-        Es[i], σs[i] = get_Eσ([par.α, par.α12, β], true) # true for correlated sampling        
+        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), true) # true for correlated sampling        
     end
     p = plot(βs, Es, yerror = σs, xlabel = L"β",ylabel = L"E(β)",ylimits=(-2.90,-2.84), framestyle=:box,
              label="Correlated sampling")
@@ -159,7 +165,7 @@ function main()
 
     # E_opt(β) closure
     # x is an array, x[1] is β, the second [1] picks E from tuple output E, σ
-    E_opt = x -> get_Eσ([par.α, par.α12, x[1]], true)[1] 
+    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), true)[1] 
     
     println("start optimization from β = ",par.β, " E = ", E_opt(par.β))
     
@@ -187,24 +193,23 @@ function main()
     
     correlated = false
     for (i,β) in enumerate(βs)
-        wf_params .= [par.α, par.α12, β]
-        Es[i], σs[i] = get_Eσ(wf_params, correlated)        
+        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), correlated)        
     end
     p = plot(βs, Es, yerror = σs, xlabel = L"β",ylabel = L"E(β)", ylimits=(-2.90,-2.84), framestyle=:box,
              label="Ordinary sampling")
        
     println("\n\nOptimization of E(β) using algorithm bobyqa\n")
-    println("start optimization with β = ",par.β)
-    E_opt = x -> get_Eσ([par.α, par.α12, x[1]], false)[1]  # false for non-correlated samples 
+    
+    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), false)[1]  # false for non-correlated samples 
     min_objective!(opt, (x, _) -> E_opt(x))
+    println("start optimization from β = ",par.β, " E = ", E_opt(par.β))
     (E_min, wf_params_opt, ret) = optimize(opt, [par.β])
     println("minimum at β: ", wf_params_opt)
     println("Minimum value: ", E_min)
     println("Return code: ", ret)
-    if ret=="FORCED_STOP"
-        error("No minimum found, probably error in function.")
-    end
-    
+    println("Notice, that the optimization algorithm evaluates E(β) wherever it wants,")
+    println("and these (β, E(β)) are not those shows in the plot.") 
+    plot!([par.β], seriestype="vline",linecolor="red", label="Walkers sampled with this parameter")
     plot!([wf_params_corr_opt[1]], seriestype="vline", linecolor="green", label="Minimum found by algorithm")
     display(p)
     println("press enter")
