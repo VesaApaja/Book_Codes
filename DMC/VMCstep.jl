@@ -12,9 +12,10 @@ export vmc_step!, adjust_step!
 
 
 # one VMC step
-
-function vmc_step!(R ::MMatrix, params ::VMC_Params)    
+#=
+function vmc_step!(R ::MMatrix, params ::VMC_Params; ln_psi2=missing)
     Ψ = ln_psi2(R)
+    dim = size(R,1)
     N = size(R,2)
     @inbounds for i in 1:N
         rr = @SVector rand(Float64,dim)
@@ -42,6 +43,7 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params)
     end
     Ψ
 end
+=#
 
 # alternatives
 # ------------

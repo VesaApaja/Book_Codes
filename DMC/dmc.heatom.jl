@@ -26,6 +26,7 @@ push!(LOAD_PATH,".")
 using VMCstep
 using Utilities
 using QMC_Statistics
+using Common
 #
 # Parameters
 #
