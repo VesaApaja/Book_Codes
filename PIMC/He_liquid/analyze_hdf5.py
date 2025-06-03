@@ -102,52 +102,72 @@ E_exp = [x[1] for x in Expdat]
 
 def load_hdf5(filename):    
     with h5py.File(filename, "r") as f:
+        data_dict = dict()
         try:
             # Energies
-            E_th = f["E_th/E"][()]
-            std_E_th = f["E_th/std_E"][()]
-            E_vir = f["E_vir/E"][()]
-            std_E_vir = f["E_vir/std_E"][()]
-            V = f["E_vir/V"][()]
-            std_V = f["E_vir/std_V"][()]
-            
-            # superfluid fraction
-            try:
-                rho_s = f["superfluid_fraction/rhos"][()]
-                std_rho_s = f["superfluid_fraction/std"][()]
-            except:
-                pass
-            
-            # g(r)
-            try:
-                gs = f["radial_distribution/g"][:]
-                rs = f["radial_distribution/r"][:]
-            except:
-                pass
-            
-            ok = True
+            data_dict["E_th"] = f["E_th/E"][()]
+            data_dict["std_E_th"] = f["E_th/std_E"][()]
         except:
+            pass
+
+        try:
+            data_dict["E_vir"] = f["E_vir/E"][()]
+            data_dict["std_E_vir"] = f["E_vir/std_E"][()]
+        except:
+            pass
+
+        try:
+            data_dict["V"] = f["E_vir/V"][()]
+            data_dict["std_V"] = f["E_vir/std_V"][()]
+        except:
+            pass
+        
+        # superfluid fraction
+        try:
+            data_dict["rho_s"] = f["superfluid_fraction/rhos"][()]
+            data_dict["std_rho_s"] = f["superfluid_fraction/std"][()]
+        except:
+            pass
+
+        # g(r)
+        try:
+            data_dict["gs"] = f["radial_distribution/g"][:]
+            data_dict["rs"] = f["radial_distribution/r"][:]
+        except:
+            pass
+        
+        # obdm rho_1(r)
+        try:
+            data_dict["obdms"] = f["obdm/obdm"][:]
+            data_dict["obdms_std"] = f["obdm/std"][:]
+            data_dict["obdm_rs"] = f["obdm/r"][:]            
+        except:
+            pass
+
+        ok = True
+        if len(data_dict)==0:
             print("no required data in HDF5 file (yet)")
             ok = False
 
+
         # Metadata
-        date = f["metadata/date"][()].decode()
+        data_dict["date"] = f["metadata/date"][()].decode()
         
         
-        T = f["metadata/T"][()]
-        N = f["metadata/N"][()]
-        tau = f["metadata/tau"][()]
-        action = f["metadata/action"][()].decode()
+        data_dict["T"] = f["metadata/T"][()]
+        data_dict["N"] = f["metadata/N"][()]
+        data_dict["tau"] = f["metadata/tau"][()]
+        data_dict["action"] = f["metadata/action"][()].decode()
         print('hdf5 ',filename)
-        print(f"Result Date: {date}")
+        print(f"Result Date: {data_dict["date"]}")
     if not ok:
+        print("HFD5 read failed for file",filename)
         return False
         
-    return E_th, std_E_th, E_vir, std_E_vir, rho_s, std_rho_s, gs, rs, T, tau, action, V, std_V, N
+    return data_dict
 
 
 filemarkers = ['results.He_liquid_chin_']
-
 
 def readdat(ids):
     res = []    
@@ -159,10 +179,11 @@ def readdat(ids):
                     if not id in file: ok = False
                 
                 if not ok: continue
+                
                 rr = load_hdf5(file)
                 if rr==False:
                     continue
-                res.append(rr)
+                res.append(rr) # list of dictionaries
     return res
 
 def plot_E(Edata, col, action_str, N, first):
@@ -264,6 +285,61 @@ def plot_V(Vdata, col, action_str, N, first):
     plt.pause(0.001)
     plt.draw()
 
+
+def plot_obdm(data, col, N, first):    
+    # Plot obdm(r) a.k.a. rho_1(r)
+    
+    plt.figure(5)
+    if first:
+        plt.clf()   
+    
+    data.sort()
+    for dat in data:
+        T, rs, obdms, stds = dat        
+        Tscr = f'{T:.3f}'
+        lab = "T = "+Tscr+" N="+str(N)
+        
+        plt.plot(rs, obdms, label = "T = "+Tscr+" N="+str(N))
+        #plt.errorbar(rs,obdms,stds, marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
+    plt.xlabel("r")
+    plt.ylabel(r"$\rho_1(r)$")
+    plt.title("One-body density matrix (obdm)")
+    #plt.ylim([0,1.1])
+    plt.tight_layout()
+    plt.legend()    
+    plt.pause(0.001)
+    plt.draw()
+
+    
+def plot_n0(data, col, action_str, N, first):
+    plt.figure(6)
+    if first:
+        plt.clf()
+    lab = " N="+str(N)
+    data.sort()
+    Ts = np.array([d[0] for d in data])
+    n0s = [d[1] for d in data]
+    stds = [d[2] for d in data]
+    spline = PchipInterpolator(Ts, n0s)
+    Tsmooth =  np.linspace(Ts.min(), Ts.max(), 300)
+    n0ssmooth = spline(Tsmooth)
+    plt.plot(Tsmooth, n0ssmooth, '-', color=col)
+    plt.errorbar(Ts,n0s,stds, marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
+
+    T_GCs =  np.linspace(0.0, 1.0, 100)
+    n0_GCs = 1- T_GCs**(3/2)  # n0 = 1-(T/Tc)^3/2 , Tc = 1.0
+    plt.plot(T_GCs, n0_GCs, '-', color='blue', label='GC')
+    
+    plt.xlim([0.0,3])
+    plt.ylim([-0.1,1.2])
+    plt.title("Condensate fraction")
+    plt.hlines(0,0,5,linestyles='dashed')
+    plt.xlabel("T [K]")
+    plt.ylabel(r"$n_0$")
+    plt.legend()
+    plt.pause(0.001)
+    plt.draw() 
+
 def plot():
     
 
@@ -283,25 +359,42 @@ def plot():
         Edata = []
         Vdata = []
         gdata = []
+        obdmdata = []
+        n0data = []
+        Vdata = []
         rhosdata = []
-        for r in res:
-            d = [r[i] for i in [8,2,3]] # virial estimator
-            Edata.append(d)
-            print('Energies: ',d)
-            d = [r[i] for i in [8,11,12]]
-            Vdata.append(d)
-            
-            d = [r[i] for i in [8,9,7,6]]
-            gdata.append(d)
-            
-            d = [r[i] for i in [8,4,5]]
-            rhosdata.append(d)
-            action = r[10]
-            N = r[13]
-            ok = True
-    
-            # E_th, std_E_th, E_vir, std_E_vir, rho_s, std_rho_s, gs, rs, T, tau, action, V, std_V, N
+        for r in res: # r is a dictionary
+            if "E_vir" in r.keys():
+                d = [r["T"] , r["E_vir"], r["std_E_vir"]]
+                Edata.append(d)
+                print('Energies: ',d)  # virial estimator
 
+            if "gs" in r.keys():
+                d = [r["T"], r["tau"], r["rs"], r["gs"]]
+                gdata.append(d)
+                
+            if "rho_s" in r.keys():
+                d = [r["T"], r["rho_s"], r["std_rho_s"]]
+                rhosdata.append(d)
+                
+            action = r["action"]
+            N = r["N"]
+            
+            if "obdms" in r.keys():
+                norm = r["obdms"][0]
+                r["obdms"] /= norm
+                r["obdms_std"] /= norm
+                
+                # just tail: 
+                n0 = r["obdms"][-1]
+                n0_std = r["obdms_std"][-1]
+                
+                d = [r["T"], r["obdm_rs"], r["obdms"], r["obdms_std"]]
+                obdmdata.append(d)
+                d = [r["T"], n0, n0_std]
+                n0data.append(d)
+            
+            ok = True
         if not ok:
             print("no data to plot")
     
@@ -309,10 +402,20 @@ def plot():
             action_str = "Chin Action" 
         else:
             action_str = "Primitive Action"
-        plot_E(Edata, col, action_str, N, first)
-        plot_V(Vdata, col, action_str, N, first)
-        plot_g(gdata, col, action_str, N, first)
-        plot_rhos(rhosdata, col, action_str, N, first)
+        if len(Edata)>0:
+            plot_E(Edata, col, action_str, N, first)
+        if len(Vdata)>0:
+            plot_V(Vdata, col, action_str, N, first)
+        if len(gdata)>0:
+            # sort gdata to increasing T
+            gdata.sort()
+            plot_g(gdata, col, action_str, N, first)
+        if len(rhosdata)>0:
+            plot_rhos(rhosdata, col, action_str, N, first)
+        if len(obdmdata)>0:
+            plot_obdm(obdmdata, col, N, first)
+        if len(n0data)>0:
+            plot_n0(n0data, col, action_str, N, first)
         first = False
 
 def onclick(event):
