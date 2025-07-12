@@ -6,6 +6,8 @@ using Random
 using LinearAlgebra: BLAS, ⋅
 BLAS.set_num_threads(1) 
 using JLD2 # binary restart files
+using BenchmarkTools
+
     
 # local modules:
 push!(LOAD_PATH,".")
@@ -16,7 +18,7 @@ using PIMC_Common
 
 export t_pimc, t_links, t_beads, t_move, t_measurement
 export init_pimc, run_pimc, check_links
-export read_restart!
+export write_restart, read_restart!
 
 @inline norm(x) = sqrt(sum(abs2,x))
 
@@ -41,7 +43,7 @@ mutable struct t_measurement
 end
 
 struct t_beads
-    X::Matrix{Float64} # unwrapped bead positions (dim, bead id)
+    X::Matrix{Float64} # bead positions (dim, bead id)
     ids::Vector{Int64} # bead ids
     ts::Vector{Int64}   # mapping bead id -> time slice
     at_t::Dict{Int64, Vector{Int64}}  # mapping bead time slice ->  list of id's
@@ -51,8 +53,8 @@ end
       
 
 struct t_links
-    next::Array{Int64}
-    prev::Array{Int64}
+    next::Vector{Int64}
+    prev::Vector{Int64}
 end
 
 
@@ -74,44 +76,59 @@ mutable struct t_pimc{A<:PIMC_Common.action}
     τ::Float64                       # imaginary time step
     L::Float64                       # box size in PBC
     μ::Float64                       # chemical potential, μ=0 in canonical
+    # Chin action parameters:
+    chin_a1::Float64
+    chin_t0::Float64
+    # potentials 
     pair_potential::Union{Function, Nothing}        # pair potential V(r_ij)
     confinement_potential::Union{Function, Nothing} # confinement V_ext(vecr)
-    der_pair_potential::Union{Function, Nothing}  # ∇_i V(r_ij)
+    der_pair_potential::Union{Function, Nothing}  # V´(r_ij)
+    der2_pair_potential::Union{Function, Nothing} # V´´(r_ij)
     grad_confinement_potential::Union{Function, Nothing} # ∇_i V_ext(vecr)
+    grad2_confinement_potential::Union{Function, Nothing} # ∇_i^2 V_ext(vecr)
     ipimc::Int64                     # PIMC step counter
     iworm::Int64                     # worm step counter
     head::Int64                      # worm head bead id
-    tail::Int64                      #   ...     tail id  
+    tail::Int64                      #   ...     tail id
+    swapcount::Int64
     restart_file::String
     hdf5_file::String
+    filesuffix::String
     # reported values
     acceptance ::Dict #{String, Float64} 
     # tasks to do now and then
-    measurements::Array{t_measurement,1}
-    moves::Array{t_move,1}
-    reports::Array{t_report,1}
+    measurements::Vector{t_measurement}
+    moves::Vector{t_move}
+    reports::Vector{t_report}
 end
 
 function t_pimc{A}(; canonical=true,
-                M=10,
-                β=1.0,
-                τ=0.1, L=1.0, μ=0.0,
-                ipimc=0, iworm=0, head=-1, tail=-1,
-                restart_file = "",
-                hdf5_file = "",
-                pair_potential=nothing,
-                confinement_potential=nothing,
-                der_pair_potential=nothing,
-                grad_confinement_potential=nothing,
-                acceptance=Dict(),
-                measurements=[],
-                moves=[],
-                reports=[]) where A<:PIMC_Common.AbstractAction
+                   M=10,
+                   β=1.0,
+                   τ=0.1, L=1.0, μ=0.0,
+                   chin_a1 = 0.33,
+                   chin_t0 = 0.1215,
+                   ipimc=0, iworm=0, head=-1, tail=-1, swapcount=0,
+                   restart_file = "",
+                   hdf5_file = "",
+                   filesuffix = "",
+                   pair_potential=nothing,
+                   confinement_potential=nothing,
+                   der_pair_potential=nothing,
+                   der2_pair_potential=nothing,
+                   grad_confinement_potential=nothing,
+                   grad2_confinement_potential=nothing,
+                   acceptance=Dict(),
+                   measurements=[],
+                   moves=[],
+                   reports=[]) where A<:PIMC_Common.AbstractAction
     return t_pimc{A}(canonical,
-                     M, β, τ, L, μ,
+                     M, β, τ, L, μ, chin_a1, chin_t0,
                      pair_potential, confinement_potential,
-                     der_pair_potential, grad_confinement_potential,
-                     ipimc, iworm, head, tail, restart_file, hdf5_file,
+                     der_pair_potential, der2_pair_potential,
+                     grad_confinement_potential,
+                     grad2_confinement_potential, 
+                     ipimc, iworm, head, tail, swapcount, restart_file, hdf5_file, filesuffix,
                      acceptance,
                      measurements, moves, reports
                      )
@@ -123,7 +140,9 @@ function init_pimc(; M::Int64,
                    pair_potential::Union{Function, Nothing}=nothing,
                    confinement_potential::Union{Function, Nothing}=nothing,
                    der_pair_potential::Union{Function, Nothing}=nothing,
-                   grad_confinement_potential::Union{Function, Nothing}=nothing,                   
+                   der2_pair_potential::Union{Function, Nothing}=nothing,
+                   grad_confinement_potential::Union{Function, Nothing}=nothing,
+                   grad2_confinement_potential::Union{Function, Nothing}=nothing                   
                    ) 
             
     
@@ -136,11 +155,13 @@ function init_pimc(; M::Int64,
     end
     
     # Bead positions
-    # TODO: reserve some extra space if not canonical   
+    # 
+    # reserve some extra space (needed in canonical obdm measurement and always in grand canonical)    
+    Nbeads = N_slice_max*M
     # bead ids
-    ids = collect(1:N*M)
-    # bead id -> time slice mapping
-    ts = [(id - 1) ÷ N + 1 for id in ids]
+    ids = collect(1:Nbeads) 
+    # bead id -> time slice mapping    
+    ts = [(id - 1) ÷ N_slice_max + 1 for id in ids]
     # dictionary time slice -> bead ids on that time slice
     at_t = Dict{Int64, Vector{Int64}}()
     for t in 1:M
@@ -152,6 +173,7 @@ function init_pimc(; M::Int64,
         end
         at_t[t] = id_list
     end
+    
 
     # bead id -> imaginary time mapping (τ units), set in PIMC_main calling init_action! 
     times = Array{Float64}(undef, length(ids))
@@ -164,51 +186,50 @@ function init_pimc(; M::Int64,
         error("unknown action")
     end
     @show PIMC_Common.action, τ
-
-    # mark all beads active 
-    active = trues(length(ids))
+    
+    active = falses(Nbeads)
     # allocate beads and their backup
-    beads = t_beads(Matrix{Float64}(undef, dim, N*M), ids, ts, at_t, times, active)
-    # active must be copied, else beads.active is beads_backup.active
-    beads_backup = t_beads(Matrix{Float64}(undef, dim, N*M), ids, ts, at_t, times, copy(active))
-
-    # bead-bead links
+    beads = t_beads(Matrix{Float64}(undef, dim, Nbeads), ids, ts, at_t, times, active)
+    beads_backup = deepcopy(beads) # deepcopy to get independent array memory
     
-    next  = zeros(Int64, N*M)  # id of next bead 
-    prev  = zeros(Int64, N*M)  # id of previous bead
-    active = findall(beads.active)
-    for id in active
-
-        t = beads.ts[id]
+    # activate N beads for each slice
+    for m in 1:M
+        bs = beads.at_t[m][1:N]
+        active[bs] .= true
+    end
+    # bead <-> bead links (whether active or not)   
+    next  = zeros(Int64, Nbeads)  # id of next bead 
+    prev  = zeros(Int64, Nbeads)  # id of previous bead
+    for t in 1:M        
         t_next = mod1(t+1, M)
-        # find active bead not in next 
-        id_nexts = setdiff(active, next)
-        # find a bead at t_next 
-        ind = findfirst(id -> beads.ts[id] == t_next, id_nexts)
-        id_next = id_nexts[ind]
-        next[id] = id_next
+        bs_t = beads.at_t[t]
+        bs_t_next = beads.at_t[t_next]
+        for (id, id_next) in zip(bs_t, bs_t_next)
+            next[id] = id_next
+            prev[id_next] = id
+        end
     end
-    
-    for id in active
-        prev[next[id]] = id
-    end
-    # links and their backup
+    # make link struct and its backup
     links = t_links(next, prev)
-    links_backup = t_links(copy(next), copy(prev))
+    links_backup = deepcopy(links)
+    
+    
     
     if pbc
-        println("grid position init")
-        pos = grid_points(N, dim, L, pbc) # coordinates in pbc box [0, L]
+        println("grid position init for $N particles")
+        pos = grid_points(N, dim, L, pbc) # coordinates in box [0,         
+        pos .+= 1.5 .* (rand(dim,N) .- 0.5) # small random shift
+        # move coordinates to box [-L/2, L/2]
+        for i in 1:N
+            periodic!(view(pos, :, i), L)
+        end
         # follow links so that world lines are (almost) straight 
-        bs = beads.at_t[1] # start links from these
+        bs = beads.at_t[1][1:N]  # start links from N beads at slice 1
         i = 1 # particle i world line
-
         for id1 in bs
-            id = id1
-            
+            id = id1            
             while true
-                beads.X[:, id] .= pos[:,i]  # .+ 0.05*(rand(dim).-0.5) # add randomness
-                periodic!(view(beads.X, :, id), L)
+                @inbounds beads.X[:, id] .= pos[:,i] 
                 id = links.next[id]
                 id == id1 && break
             end
@@ -216,22 +237,21 @@ function init_pimc(; M::Int64,
         end
     else
         λ = 0.5 # just for this init
-        active = findall(beads.active)
-        for id in active
+        for id in beads.ids[beads.active]
             beads.X[:, id] .= randn(dim) * sqrt(2*λ*τ) # gaussian distribution
         end
      
     end
 
-    @show PIMC_Common.action
-    
-    
-    PIMC = t_pimc{PIMC_Common.action}(M=M, β=β, τ=τ, L=L, ipimc=0, iworm=0, head=-1, tail=-1,
-                  pair_potential=pair_potential,
-                  confinement_potential=confinement_potential,
-                  der_pair_potential=der_pair_potential,
-                  grad_confinement_potential=grad_confinement_potential                  
-                  )
+        
+    PIMC = t_pimc{PIMC_Common.action}(M=M, β=β, τ=τ, L=L, ipimc=0, iworm=0, head=-1, tail=-1,swapcount=0,
+                                      pair_potential=pair_potential,
+                                      confinement_potential=confinement_potential,
+                                      der_pair_potential=der_pair_potential,
+                                      der2_pair_potential=der2_pair_potential,
+                                      grad_confinement_potential=grad_confinement_potential,
+                                      grad2_confinement_potential=grad2_confinement_potential                                    
+                                      )
 
     
     
@@ -264,9 +284,16 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
         move_name_to_num[move.name] = i
     end
     
-    count_timers = zeros(Int64, length(PIMC.moves))
-    timers = zeros(length(PIMC.moves))
-       
+    meas_name_to_num = Dict()
+    for (i, meas) in enumerate(PIMC.measurements)
+        meas_name_to_num[meas.name] = i
+    end
+    
+    
+    move_timers = zeros(length(PIMC.moves))
+    meas_timers = zeros(length(PIMC.measurements))
+    move_counts = zeros(Int64, length(PIMC.moves))
+    meas_counts = zeros(Int64, length(PIMC.measurements))
 
     # move open-worm measurements to own list    
     worm_measurements = Vector{t_measurement}(undef, 0)     
@@ -283,14 +310,14 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
         PIMC.acceptance[move] = 0.0
     end
     
-    
+    start_time = time()
     while true
         PIMC.ipimc += 1
         move = rand(moves)
         movenum = move_name_to_num[move.name]
         if PIMC.canonical && count(beads.active) != N*PIMC.M
             @show count(beads.active), N*PIMC.M
-            error("wrong number of beads, usually mistake in worm moves")
+            error("wrong number of active beads (usually mistake in worm moves)")
         end
         t = @elapsed begin
             if move.name == :worm_move
@@ -300,19 +327,29 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
                 PIMC.acceptance[move] = move.exe(PIMC, beads, links)
             end
         end
-        count_timers[move_name_to_num[move.name]] += 1
-        timers[move_name_to_num[move.name]] += t
+        
+        move_counts[move_name_to_num[move.name]] += 1
+        if move_counts[move_name_to_num[move.name]] > 1
+            # skip compilation call
+            move_timers[move_name_to_num[move.name]] += t
+        end
 
         
-        
-        if PIMC.ipimc%10000==0
+        if PIMC.ipimc%1000==0
             println(" ")            
-            tsum = sum(timers)
+            tsum = sum(move_timers)
+            t = 0.0
             for move in PIMC.moves
                 i = move_name_to_num[move.name]                
-                @printf("timings: %15s %10.3f %% \n", move.name, timers[i]/tsum*100.0)
+                @printf("timings: %15s %10.3f seconds %10.1f %% \n", move.name,
+                        move_timers[i]/move_counts[i], move_timers[i]/tsum*100.0)
+                t += move_timers[i]
             end
             println(" ")
+            runtime =  time()-start_time
+            @printf("total        move time = %-15.1f seconds\n",t)
+            @printf("total measurement time = %-15.1f seconds\n",runtime-t)            
+            @printf("total         run time = %-15.1f seconds\n",runtime)
         end
        
         
@@ -327,33 +364,71 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
                 report.exe(PIMC)
             end
         end
+        
         if limit>0 && abs(PIMC.ipimc)>limit
             # profiling
             return
         end
         
         PIMC.ipimc < 0 && continue # in thermalization
-        PIMC.ipimc==0 && println("thermalization ends")
-       
 
-        if PIMC.ipimc%10000==0 && PIMC_Common.sys != :HarmonicOscillator
-            # don't bother to write restart for HO tests
-            print("writing restart file ... ")
+         
+        #
+        # Measuring phase
+        # 
+        if PIMC.ipimc==0
+            println("="^80)
+            println("="^80)
+            println("=== Thermalization ends ===")
+            println("="^80)
+            println("="^80)
+            # Zero counters when thermalization is done
+            # Important for normalization of the one-body density matrix     
+            worm_stats.N_open_try = 0
+            worm_stats.N_open_acc = 0
+            worm_stats.N_close_try = 0
+            worm_stats.N_close_acc = 0
+        end
+        
+
+               
+
+        if PIMC.ipimc%10000==0
             write_restart(PIMC, beads, links)            
-            println("done")
             #GC.gc() # manual garbage collection
         end
-        
-        
-        # in measuring phase
+       
         for meas in setdiff(PIMC.measurements, worm_measurements)
-            if PIMC.ipimc%meas.frequency==0
-                meas.exe(PIMC, beads, links, meas)                
+            if PIMC.ipimc%meas.frequency==0                
+                t = @elapsed begin
+                    meas.exe(PIMC, beads, links, meas)
+                end
+                
+                    
+                meas_counts[meas_name_to_num[meas.name]] += 1
+                if meas_counts[meas_name_to_num[meas.name]]>1
+                    # skip compilation call
+                    meas_timers[meas_name_to_num[meas.name]] += t
+                    # if timing, comment out saving restart, or you get a different result every time
+                    #if meas.name==:E_vir                    
+                    #    @show t
+                    #    exit()
+                    #end
+                end
             end
         end
-
-
-
+        if PIMC.ipimc>0 && PIMC.ipimc%1000==0
+            println("")
+            println("Cumulative Measurement timings (not worm measurements):")            
+            tsum = sum(meas_timers)
+            for meas in setdiff(PIMC.measurements, worm_measurements)
+                i = meas_name_to_num[meas.name]                
+                @printf("timings: %30s %15.2f seconds %10.1f %% \n", meas.name,
+                        meas_timers[i], meas_timers[i]/tsum*100.0)
+            end
+            println("")
+        end
+   
     end
     
     
@@ -365,8 +440,7 @@ function check_links(PIMC::t_pimc, beads::t_beads, links::t_links)
     prev = links.prev
     head = 0
     tail = 0
-    active = findall(beads.active)
-    for id in active
+    for id in beads.ids[beads.active]
         next_id  = next[id]        
         if next_id == -1
             if head != 0
@@ -382,7 +456,13 @@ function check_links(PIMC::t_pimc, beads::t_beads, links::t_links)
             @show prev[next_id] , id, next_id
             error("link $id <- $next_id is broken")
         end
-        prev_id = links.prev[id]
+        for b in beads.ids[beads.active]
+            if prev[b] == id && b != next_id
+                error("2-to-1 intersection, both $b and $prev_id have bead $id as prev")
+            end
+        end
+        
+        prev_id = links.prev[id]        
         if prev_id == -1
             if tail != 0
                 error("two tails!")
@@ -396,20 +476,24 @@ function check_links(PIMC::t_pimc, beads::t_beads, links::t_links)
             @show beads.ts[prev_id],  beads.ts[id]
             error("link $prev_id -> $id is broken")
         end
+        for b in beads.ids[beads.active]
+            if next[b] == id && b != prev_id
+                error("both $b and $prev_id have bead $id as next")
+            end
+        end
     end
-   
 end
 
 
 function grid_points(N::Int64, dim::Int64, L::Float64, pbc::Bool)
-    """points on roughly equally spaced grid in dim dimensions"""
+    """points on equally spaced grid in dim dimensions"""
     nbox  = floor(Int64, N^(1/dim)) # number of one-particle boxes
     nbox^dim < N && (nbox += 1)
     ii = ones(dim)
     
     X = Matrix{Float64}(undef, dim, N)
     for i in 1: N
-        X[:, i] = (ii .- 0.5) .* L/nbox  .+ 1.5.*(rand(dim) .- 0.5) # small random shift
+        X[:, i] = (ii .- 0.5) .* L/nbox  
         i==N && break
         ii[1] += 1
         if ii[1] > nbox
@@ -420,12 +504,7 @@ function grid_points(N::Int64, dim::Int64, L::Float64, pbc::Bool)
                 ii[3] += 1                   
             end
         end
-    end
-    # scale to middle of the box
-    #X .*= 0.9
-
-   
-    
+    end  
     rmin = 1e6
     for i in 1: N
         for j in i+1:N
@@ -438,21 +517,52 @@ function grid_points(N::Int64, dim::Int64, L::Float64, pbc::Bool)
 end
 
 
-function write_restart(PIMC::t_pimc, beads::t_beads, links::t_links)    
-    @save PIMC.restart_file PIMC beads links
+function write_restart(PIMC::t_pimc, beads::t_beads, links::t_links)
+    println("writing restart file ...")
+    @save PIMC.restart_file PIMC beads links worm_C=PIMC_Common.worm_C  worm_K=PIMC_Common.worm_K worm_limit=PIMC_Common.worm_limit
+    println("done")
 end
 
 function read_restart!(PIMC::t_pimc, beads::t_beads, links::t_links)
-    # @load "restart.tmp"  PIMC beads links
-    # would replace existing structures, I don't want old measument data read
-    data = load(PIMC.restart_file)
-    not_load = ["measurements", "moves", "potential", "ipimc", "iworm"]
-    for field in fieldnames(typeof(PIMC))
-        any(occursin.(not_load, String(field))) && continue
-        println("loading $field")
-        setproperty(PIMC, field) =  data["PIMC"].field       
-        #PIMC.field .= data["PIMC"].field
+    
+    if !isfile(PIMC.restart_file)
+        println("no restart file $(PIMC.restart_file)")
+        error("restart failed")
     end
+    data = load(PIMC.restart_file)
+
+    if PIMC.canonical != data["PIMC"].canonical
+        error("Restart file is not canonical = $(PIMC.canonical)")
+    end
+    try
+        # read worm parameters - important 
+        # old restart files may not have'm
+        PIMC_Common.worm_C = data["worm_C"]
+        PIMC_Common.worm_K = data["worm_K"]
+        PIMC_Common.worm_limit = data["worm_limit"]
+    catch
+        println("no worm_C etc. worm parameters in restart file, consider optimization")
+    end
+    if restart_with_data
+        # continue measurements
+        println("Restarting with old measured data")
+        @load PIMC.restart_file PIMC # this loads the *whole* PIMC structure
+        for meas in PIMC.measurements
+            if meas.name==:obdm
+                println("ignoring obdm in restart, starting new data collection")
+                meas.stat.nblocks = 0
+                meas.stat.sample.data .= 0
+                meas.stat.sample.data2 .= 0
+                meas.stat.sample.input_σ2 = 0.0
+            end
+            break
+        end
+    else
+        println("Using default chin_a1 and chin_to, ignoring values in restart file")     
+        PIMC.chin_a1 = 0.33
+        PIMC.chin_t0 = 0.1215
+    end
+
     beads.X .= data["beads"].X
     beads.active .= data["beads"].active
     links.next .= data["links"].next

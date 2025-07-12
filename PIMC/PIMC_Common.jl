@@ -1,6 +1,8 @@
 __precompile__(false)
 module PIMC_Common
 
+using StaticArrays
+
 
 include("PIMC_Systems.jl")
 import .PIMC_Systems.HarmonicOscillator
@@ -9,110 +11,95 @@ import .PIMC_Systems.Noninteracting
 
 export λ, pbc, bose, Ntherm, system, τ_target
 export action, results
-export N, dim, worm_K, worm_C, worm_limit, swap_limit
-export restart
-export periodic!, distance, distance!, dist, dist2
+export N, dim, worm_C, worm_limit, worm_K, N_slice_max
+export restart, restart_with_data
+export periodic!, distance!, dist, dist2
 export pull!
 export AbstractAction, PrimitiveAction, ChinAction
+export worm_stats
 
-# ==========================
-# CHOOSE SYSTEM AND ACTION
 
 abstract type AbstractAction end
 struct PrimitiveAction <: AbstractAction end
 struct ChinAction <: AbstractAction end
 
+TEST = false # test vs. production code, TEST may change anywhere
+opt_chin = false # EXPERIMENTAL force Chin a1 ad t0 parameter optimization
 
-case = 1
+# ==========================
+# CHOOSE SYSTEM AND ACTION
+
+case = 264
 
 if case==1
     sys = :HarmonicOscillator
-    restart = false
+    restart = true
+    if restart
+        restart_with_data = true # continue collecting data or not
+    end
     const N = 2
     const bose = true
     const dim = 1
     const pbc = false
     const λ = 0.5
-    const τ_target = 0.05
+    const τ = 0.01
     const action = ChinAction # PrimitiveAction 
-    const worm_limit = 1.e6
-    const swap_limit = 1.e6
+    worm_limit = 1.e6
     const Ntherm = 10000
-    const worm_K = 8
-    const worm_C = 0.5
+    worm_C = 0.5
+    optimize_worm_params = true    
 end
 
 if case==216 
     sys = :HeLiquid
     restart = true
+    if restart
+        restart_with_data = false # continue collecting data or not
+    end
     const N = 16
     const bose = true 
     const dim = 3
     const pbc = true
     const λ = 6.0612686
-    const τ_target = 0.01
+    const τ = 0.01
     const action = ChinAction
-    const worm_limit = 100.0
-    const swap_limit = 1e6
-    const Ntherm = 10000 
-    const worm_K = 90
-    const worm_C = 0.6
+    worm_limit = 100.0
+    const Ntherm = 100
+    worm_C = 0.1
+    optimize_worm_params = false   
 end
 
-
-if case==232
-    sys = :HeLiquid
-    restart = true 
-    const N = 32
-    const bose = true 
-    const dim = 3
-    const pbc = true
-    const λ = 6.0612686
-    const τ_target = 0.01
-    const action = ChinAction
-    const worm_limit = 100.0
-    const swap_limit = 1e6
-    const Ntherm = 10000
-    const worm_K = 90  
-    const worm_C = 0.6
-end
 
 if case==264
     sys = :HeLiquid
     restart = true
+    if restart
+        restart_with_data = true # continue collecting data or not
+    end
     const N = 64
     const bose = true 
     const dim = 3
     const pbc = true
     const λ = 6.0612686
-    const τ_target = 0.01
-    const action = ChinAction
-    const worm_limit = 200.0
-    const swap_limit = 1e6
-    const Ntherm = 10000
-    const worm_K = 130 
-    const worm_C = 0.6
+    const τ = 0.01
+    const action = ChinAction #PrimitiveAction 
+    worm_limit = 30.0
+    const Ntherm = 1000
+    worm_C = 0.1
+    optimize_worm_params = false  
 end
 
 
-if case==3
-    sys = :Noninteracting
-    restart = false
-    const N = 64
-    const bose = true
-    const dim = 3
-    const λ = 0.5
-    const pbc = true
-    const τ_target = 0.1 # not too large, or large winding causes min. image errors  
-    const action = ChinAction
-    const worm_limit = 100.0
-    const swap_limit = 1.e6 
-    const Ntherm = 1000    
-    const worm_K = 10
-    const worm_C = 0.3
+worm_K = 30 #  a better value given in PIMC_main based on M, optimized if optimize_worm_params = true
+const N_slice_max = N+5 # extra space per slice
+
+mutable struct t_worm_stats
+    N_open_try::Int64 
+    N_open_acc::Int64 
+    N_close_try::Int64
+    N_close_acc::Int64
 end
-
-
+const worm_stats = t_worm_stats(0, 0, 0, 0)
 
 # =====================================
 
@@ -120,6 +107,9 @@ const system = eval(:(PIMC_Systems.$sys))
 
 results = Dict{String, Any}()
 Vtail = 0.0 # set in PIMC_main
+
+# Lightweight buffer, *not* thread-safe
+const vec_buffer  = MVector{dim, Float64}(undef)
 
 
 
@@ -142,24 +132,7 @@ end
     r
 end
 
-# benchmarked against LoopVectorization and @tturbo: copying to Vector's takes longer 
-function distance(r1::SubArray{T}, r2::SubArray{T}, L::Float64) where T<:Number
-    """Minimum image distance vector r1-r2 for pbc, r1-r2 for non-pbc"""
-    error("use distance! ")
-    vecr12 = similar(r1)
-    @inbounds for d in eachindex(vecr12)
-        vecr12[d] = r1[d] - r2[d]
-    end
-    if pbc
-        @inbounds for d in eachindex(vecr12)
-            vecr12[d] -= L * round(vecr12[d]/L)
-        end
-    end  
-    vecr12
-end
-
-# avoid creating new vector
-function distance!(r1::AbstractVector{T}, r2::AbstractVector{T}, L::Float64, dr::AbstractVector{T}) where T<:Number
+function distance!(r1::AbstractVector{T}, r2::AbstractVector{T}, L::Float64, dr::AbstractVector{T}) where T<:Real
     """Minimum image distance vector r1-r2 for pbc, r1-r2 for non-pbc"""
     
     if pbc
@@ -175,42 +148,43 @@ function distance!(r1::AbstractVector{T}, r2::AbstractVector{T}, L::Float64, dr:
 end
 
 
-function dist(r1::SubArray{T}, r2::SubArray{T}, L::Float64) where T<:Number
+function dist(r1::AbstractVector{Float64}, r2::AbstractVector{Float64}, L::Float64) 
     """Minimum image distance |r1-r2| for pbc, distance for non-pbc"""
-    vecr12 = similar(r1)
-    @inbounds for d in eachindex(vecr12)
-        vecr12[d] = r1[d] - r2[d]
+    r12 = vec_buffer 
+    @inbounds for d in eachindex(r12)
+        r12[d] = r1[d] - r2[d]
     end
     r = 0.0
     if pbc
-        @inbounds for d in eachindex(vecr12)
-            vecr12[d] -= L * round(vecr12[d]/L)
-            r += vecr12[d]^2
+        @inbounds for d in eachindex(r12)
+            r12[d] -= L * round(r12[d]/L)
+            r += r12[d]^2
         end
     else
-        @inbounds for d in eachindex(vecr12)
-            r += vecr12[d]^2
+        @inbounds for d in eachindex(r12)
+            r += r12[d]^2
         end        
     end  
     r = sqrt(r)
 end
 
 
-function dist2(r1::SubArray{T}, r2::SubArray{T}, L::Float64) where T<:Number
+
+function dist2(r1::AbstractVector{Float64}, r2::AbstractVector{Float64}, L::Float64)
     """Minimum image distance |r1-r2| for pbc, distance for non-pbc"""
-    vecr12 = similar(r1)
-    @inbounds for d in eachindex(vecr12)
-        vecr12[d] = r1[d] - r2[d]
+    r12 = vec_buffer
+    @inbounds for d in eachindex(r12)
+        r12[d] = r1[d] - r2[d]
     end
     r = 0.0
     if pbc
-        @inbounds for d in eachindex(vecr12)
-            vecr12[d] -= L * round(vecr12[d]/L)
-            r += vecr12[d]^2
+        @inbounds for d in eachindex(r12)
+            r12[d] -= L * round(r12[d]/L)
+            r += r12[d]^2
         end
     else
-        @inbounds for d in eachindex(vecr12)
-            r += vecr12[d]^2
+        @inbounds for d in eachindex(r12)
+            r += r12[d]^2
         end        
     end  
     r 

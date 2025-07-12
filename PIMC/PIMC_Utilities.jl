@@ -14,6 +14,7 @@ export save_paths
 export argparse
 
 
+
 # =====================================
 # ArgParse would do this, but I hate to load yet another package
 
@@ -170,11 +171,9 @@ end
 
 @inline function rho_0(r1::SubArray{Float64}, r2::SubArray{Float64}, λ::Float64, τ12::Float64, L::Float64)    
     """Free-particle density matrix ⟨r1 | e^(-τ T) | r2⟩ for one particle"""
-    # use AbstractArray to accept SubArray slices created by @view
     Δr2 = dist2(r1, r2, L)    
     return (4π*λ*τ12)^(-dim/2) * exp(-Δr2 /(4*λ*τ12))  
 end
-
 
 
 function distance_check(PIMC::t_pimc, beads::t_beads, links::t_links)

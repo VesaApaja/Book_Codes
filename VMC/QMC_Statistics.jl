@@ -91,7 +91,7 @@ function get_stats(stat ::t_Stat)
     ave .= 0
     ave2 .= 0
     input_σ2 = 0.0
-    for i = 1:N
+    @simd for i = 1:N
         d = stat.datablock[i].data
         @. ave += d
         @. ave2 += d^2

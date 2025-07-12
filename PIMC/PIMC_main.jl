@@ -6,6 +6,7 @@ using Random, LinearAlgebra, Statistics
 using Printf
 using DelimitedFiles
 using Profile
+using Distributions: Categorical
 
 # local modules:
 push!(LOAD_PATH,".")
@@ -27,7 +28,7 @@ using PIMC_Chin_Action: init_action! as init_chin_action!
 
 
 
-##Random.seed!(123456) #TESTING
+Random.seed!(123456) #TESTING
 
 # compile-time dispatch:
 # ======================
@@ -53,18 +54,25 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
 end
 # ==================================
 
-function init_M(β::Float64)
+function init_Mβ!(β::Float64)
+    # find best M and β close to input β so that τ is fixed
+    
     if PIMC_Common.action <: PrimitiveAction
-        M = round(β/τ_target)|>Int64
-        M = M>10 ? M : 10        
+        Ms = collect(1:1000)
+        # β = M*τ        
+        βs = Ms*PIMC_Common.τ        
     elseif PIMC_Common.action <: ChinAction
-        M = round(3*β/PIMC_Common.τ_target)|>Int64
-        M = M>9 ? M : 9
-        while M%3 != 0
-            M += 1
-        end        
+        Ms = collect(3:3:1000)
+        # β = M*τ/3
+        βs = Ms*PIMC_Common.τ/3
     end
-    M
+    d, index = findmin(abs.(βs .- β))
+    β = βs[index]  
+    M = Ms[index]
+    if d>1e-6
+        println("Note: using nearest temperature T=$(1/β) with M=$M that gives τ = $(PIMC_Common.τ)")
+    end
+    return M, β
 end
 
 
@@ -72,11 +80,13 @@ end
 function init_harmonic_oscillator(; β::Float64=1.0, M::Int64)
     
     PIMC, beads, links, beads_backup, links_backup = init_pimc( M=M,
-                                   β=β,                                   
-                                   L=1e6,  
-                                   canonical=true,
-                                   confinement_potential=PIMC_Common.system.potential,
-                                   grad_confinement_potential=PIMC_Common.system.grad_potential)
+                                                                β=β,                                   
+                                                                L=1e6,  
+                                                                canonical=true,
+                                                                confinement_potential=PIMC_Common.system.potential,
+                                                                grad_confinement_potential=PIMC_Common.system.grad_potential,
+                                                                grad2_confinement_potential=PIMC_Common.system.grad2_potential
+                                                                )
     
 
    
@@ -176,7 +186,8 @@ function init_He_liquid(;β::Float64=1.0, M::Int64)
     PIMC, beads, links, beads_backup, links_backup= init_pimc(β=β, M=M, L=L, 
                                                               canonical=true,
                                                               pair_potential=PIMC_Common.system.potential,
-                                                              der_pair_potential=PIMC_Common.system.der_potential
+                                                              der_pair_potential=PIMC_Common.system.der_potential,
+                                                              der2_pair_potential=PIMC_Common.system.der2_potential
                                                               )
 
     
@@ -186,7 +197,7 @@ end
 function main()
 
 
-    
+    #
     # Read command line arguments 
     possible_args=["T"]
     arg_dict = argparse(possible_args)
@@ -195,12 +206,17 @@ function main()
     if isapprox(T, 0.0)
         error("T=0.0 does not work. Did you set command line parameter T=... ?")
     end
+    #
     
-    # set M and worm_K
-    β =  1/T
-    M  = init_M(β)
-    @show M
+    # set M, β (nearest to input 1/T) and worm_K
+    M, β  = init_Mβ!(1/T)
+    T = 1/β
+    
+    
+    
+    
     @show PIMC_Common.sys
+    
     PIMC, beads, links = nothing, nothing, nothing
     if PIMC_Common.sys == :HarmonicOscillator
         # Harmonic Oscillator:
@@ -219,7 +235,7 @@ function main()
     # suffix to data files
     bosestr = bose ? "bose" : "dist"
     filesuffix = "."*PIMC_Common.system.name*"_"*actionstr*"_T"*string(round(1/PIMC.β, digits=4))*
-        "_tau"*string(round(PIMC_Common.τ_target, digits=4))*
+        "_tau"*string(round(PIMC_Common.τ, digits=4))*
         "_M"*string(PIMC.M)*"_N"*string(N)*
         "_"*bosestr*
         ".dat"
@@ -227,64 +243,58 @@ function main()
     dir = "./"*PIMC_Common.system.name*"/"    
     @show dir, filesuffix
     mkpath(dir)
-    
+    PIMC.filesuffix = filesuffix 
     PIMC.restart_file = dir*"restart"*filesuffix*".jld2"
-    if restart
-        println("Restarting from file $(PIMC.restart_file)")
-        try
-            read_restart!(PIMC, beads, links)
-        catch
-            #error("Restart failed, malformed restart file or error in read_restart!()")
-            println("Restart failed, malformed restart file or error in read_restart!()")
-            println("FRESH START")
-            PIMC_Common.restart = false
-        end
-    end
-
-   
-
-   
     
-    # sanity checks
-    if worm_K >= PIMC.M
-        @show  worm_K, PIMC.M
-        error("Can't have worm_K >= PIMC.M, swap_bead may become worm.head")
-    end
 
-    
     if PIMC_Common.action == PrimitiveAction
         init_primitive_action!(PIMC, beads)
     elseif PIMC_Common.action == ChinAction
         init_chin_action!(PIMC, beads)
     end
     
-
+    
+    #
     # Measurements:
     # =============
-    add_measurement!(PIMC, 10, :E_th, meas_E_th, 3, 100, dir*"E_th"*filesuffix)
-    add_measurement!(PIMC, 10, :E_vir, meas_E_vir, 3, 100, dir*"E_vir"*filesuffix)
+    base_freq = 10
+    add_measurement!(PIMC, base_freq, :E_th, meas_E_th, 3, 10*base_freq, dir*"E_th"*filesuffix)
+    add_measurement!(PIMC, base_freq, :E_vir, meas_E_vir, 3, 10*base_freq, dir*"E_vir"*filesuffix)
 
     # worm details
-    add_measurement!(PIMC, 10, :head_tail_histogram, meas_head_tail_histogram, PIMC.M, 100, dir*"head_tail_histogram"*filesuffix)
+    add_measurement!(PIMC, 10*base_freq, :head_tail_histogram, meas_head_tail_histogram, PIMC.M, 100*base_freq, dir*"head_tail_histogram"*filesuffix)
     
     if bose && N>1
-        add_measurement!(PIMC, 10, :cycle_count, meas_cycle_count, N, 100, dir*"cycle_count"*filesuffix)
-        add_measurement!(PIMC, 10, :superfluid_fraction, meas_superfluid_fraction, 1, 100, dir*"rhos"*filesuffix)
+        add_measurement!(PIMC, base_freq, :cycle_count, meas_cycle_count, N, 10*base_freq, dir*"cycle_count"*filesuffix)
+        add_measurement!(PIMC, base_freq, :superfluid_fraction, meas_superfluid_fraction, 1, 10*base_freq, dir*"rhos"*filesuffix)
+        add_measurement!(PIMC, base_freq, :obdm, meas_obdm, 31, 10*base_freq, dir*"obdm"*filesuffix)
     end
     if PIMC_Common.sys == :HarmonicOscillator        
-        add_measurement!(PIMC, 10, :density_profile, meas_density_profile, 301, 1000, dir*"density_profile"*filesuffix)
+        add_measurement!(PIMC, 10*base_freq, :density_profile, meas_density_profile, 301, 100*base_freq, dir*"density_profile"*filesuffix)
     end
     if PIMC_Common.sys in (:HeLiquid, :Noninteracting)
-        add_measurement!(PIMC, 10, :radial_distribution, meas_radial_distribution, 101, 100, dir*"g"*filesuffix)       
+        add_measurement!(PIMC, base_freq, :radial_distribution, meas_radial_distribution, 101, 10*base_freq, dir*"g"*filesuffix)
+        add_measurement!(PIMC, base_freq, :static_structure_factor, meas_static_structure_factor, 101, 10*base_freq, dir*"S"*filesuffix)
     end
 
+    
+    if restart
+        println("Restarting from file $(PIMC.restart_file)")
+        #try
+        read_restart!(PIMC, beads, links)
+        #catch
+        #    println("Restart failed, malformed restart file or error in read_restart!()")              # 
+        #    println("*** FRESH START ***")
+        #    PIMC_Common.restart = false
+        #end
+    end
    
     # Moves:
     # ======
     add_move!(PIMC, 10, :bead_move, bead_move!)
     add_move!(PIMC, 10, :rigid_move, rigid_move!) 
-    add_move!(PIMC, 60, :bisection_move, bisection_move!)
-    add_move!(PIMC, 30, :worm_move, worm_move!) # must have for bosons, only swap update has particle exchange
+    add_move!(PIMC, 20, :bisection_move, bisection_move!)
+    add_move!(PIMC, 60, :worm_move, worm_move!) # NB: only swap update has particle exchange
 
     # Reports
     # =======
@@ -298,9 +308,14 @@ function main()
     # report parameters
     pimc_report(PIMC)
     
-    # delete old data files (hdf5 file will be overwritten anyhow)   
+    # Delete old raw data files (the hdf5 file will always be overwritten)
+    # comment out if you want to keep collecting data after a restart (and get separate error estimates)
     for meas in PIMC.measurements          
         rm(meas.filename, force = true)
+    end
+    if PIMC_Common.opt_chin
+        file = "Chin_opt"*PIMC.filesuffix
+        rm(file, force=true)
     end
 
         
@@ -313,7 +328,7 @@ function main()
     if !restart
         moves = [:rigid; repeat([:bead], 10); repeat([:bisection], 30)] # move frequencies for warm_up
         println("warm-up beads with bead, rigid, and bisection moves, no worm")
-        for i in 1:10000 # just a few            
+        for i in 1:30000 # just a few            
             move = rand(moves)           
             if move == :rigid
                 rigid_move!(PIMC, beads, links)
@@ -328,15 +343,17 @@ function main()
             end
         end    
         println("warm-up done, begin thermalization\n")
+        write_restart(PIMC, beads, links)            
         println("="^80)
     end
     
     # PIMC START
-    run_pimc(PIMC, beads, links, beads_backup, links_backup)
-
-    # or profile for 100 steps
+    @time run_pimc(PIMC, beads, links, beads_backup, links_backup)
+    
+    
+    # or profile for a few steps
     #println("PROFILING RUN, see profile.output")
-    #profile run_pimc(PIMC, beads, links, beads_backup, links_backup, 500)
+    #@profile run_pimc(PIMC, beads, links, beads_backup, links_backup, 1000)
 
     #open("profile.output", "w") do f
     #    Profile.print(f, format=:flat, sortedby=:overhead)

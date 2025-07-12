@@ -22,6 +22,7 @@ using PIMC_Reports: report_energy
 # light-weight vector buffers, not thread-safe!
 const vec_buffer = Vector{Float64}(undef, dim)
 const vec_buffer2 = Vector{Float64}(undef, dim)
+const mat_buffer = Array{Float64, 2}(undef, dim, N*1000) # for r_ref
 
 # Storage for V(x) on each slice
 mutable struct t_stored
@@ -75,8 +76,7 @@ function Ekin_th(PIMC::t_pimc, beads::t_beads, links::t_links)
     M = PIMC.M
     Ekin = dim*N/(2*τ)    
     Δr2 = 0.0
-    active = findall(beads.active)
-    @inbounds @simd for id in active
+    @inbounds @simd for id in beads.ids[beads.active]
         id_next = links.next[id]
         Δr2  += dist2(view(beads.X, :, id), view(beads.X, :, id_next), L)
     end
@@ -191,9 +191,9 @@ function Evir_prim(PIMC::t_pimc, beads::t_beads, links::t_links)
     L = PIMC.L
     r_ref = zeros(dim)
     deriv = 0.0
-    active = findall(beads.active)
+    active = beads.ids[beads.active]
     # co-moving centroid references
-    function centroid_ref!(r_ref::Array{Float64, 2})
+    function centroid_ref!(r_ref::AbstractArray{Float64, 2})
         """ co-moving centroid reference """
         dr = zeros(dim)
         
@@ -220,7 +220,7 @@ function Evir_prim(PIMC::t_pimc, beads::t_beads, links::t_links)
     end
 
     
-    r_ref = Array{Float64, 2}(undef, dim, count(beads.active))
+    r_ref = @view mat_buffer[:, 1:length(beads.ids)] # overkill, some here and there are inactive
     centroid_ref!(r_ref)
     
    
@@ -292,7 +292,7 @@ function Evir_prim(PIMC::t_pimc, beads::t_beads, links::t_links)
         dr = zeros(dim)
         @inbounds for m in 1:M
             # beads on slice m
-            bs = active_beads_on_slice(m)
+            bs = active_beads_on_slice(beads, m)
             nbs = length(bs) # mostly N 
             @inbounds for k in 1:nbs  # index in bs
                 kk = bs[k] # bead id
@@ -324,7 +324,7 @@ end
 
 
 
-function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::SubArray{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol)
+function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol)
     """Computes change in potential energy ΔV to stored.ΔV[m]"""
      
     L = PIMC.L
@@ -444,8 +444,7 @@ function K(PIMC::t_pimc, beads::t_beads, links::t_links)
    
 
     Δr2 = 0.0
-    active = findall(beads.active)
-    @inbounds for id in active
+    @inbounds for id in beads.ids[beads.active]
         id_next = links.next[id]
         Δr2  += dist2(view(beads.X, :, id), view(beads.X, :, id_next), L)        
     end
@@ -512,7 +511,7 @@ end
 
 
 
-function U_update(PIMC::t_pimc, beads::t_beads, xold::SubArray{Float64}, id::Int64, act::Symbol)
+function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool=false)
     """Inter-action after *suggested* change xold -> beads.X[:, id]"""
     m = beads.ts[id]
     if !stored.set

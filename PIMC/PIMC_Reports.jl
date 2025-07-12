@@ -39,6 +39,11 @@ end
 
 function pimc_report(PIMC::t_pimc, io::IO=stdout)
     # parameter report
+    if PIMC_Common.TEST
+        println(io, "# "*"="^80)
+        println(io, "# TEST CODE ! (Somewhere there's a PIMC_Common.TEST = true that marks this a test version)")
+        println(io, "# "*"="^80)
+    end
     println(io, "# "*"="^80)
     println(io, "# PIMC PARAMETERS")
     println(io, "# ---------------")
@@ -51,7 +56,7 @@ function pimc_report(PIMC::t_pimc, io::IO=stdout)
     myprintf("λ", λ, io)
     myprintf("ρ", N/PIMC.L^dim, io)
         
-    not_show = ["potential","measurements","moves","reports","ipimc","iworm","acceptance"]
+    not_show = ["potential","measurements","moves","reports","ipimc","iworm","head","tail","acceptance"]
     for field in fieldnames(typeof(PIMC))
         any(occursin.(not_show, String(field))) && continue
         value = getproperty(PIMC, field)                
@@ -60,7 +65,6 @@ function pimc_report(PIMC::t_pimc, io::IO=stdout)
     
     myprintf("worm_C", worm_C, io)
     myprintf("worm_K" ,worm_K, io)
-    myprintf("swap_limit", swap_limit, io)
     myprintf("worm_limit" ,worm_limit, io)
     println(io, "# "*"="^80)
 end
@@ -69,9 +73,11 @@ notdone = true
 Eexact_dist = 0.0
 Eexact_bose = 0.0
 
+
 function report_energy(PIMC::t_pimc, meas::t_measurement)
     global notdone, Eexact_dist, Eexact_bose 
     β, M = PIMC.β, PIMC.M
+   
 
     ave, std, input_σ2, Nblocks, blocks  = get_stats(meas.stat)
     
@@ -102,6 +108,7 @@ function report_energy(PIMC::t_pimc, meas::t_measurement)
         "V" => ave[3],
         "std_V" => std[3]
     )
+    
 
     # screen output
     @printf("%d %-8s <E> = %12.8f ± %-12.8f  <T> = %12.8f ± %-12.8f <V> =  %12.8f ± %-12.8f\n",
@@ -166,10 +173,13 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
             "mu" => PIMC.μ,                                
             "worm_C" => worm_C,
             "worm_K" => worm_K,
-            "swap_limit" => swap_limit,
             "worm_limit" => worm_limit,
-            "action" => actionstr
+            "action" => actionstr,
+            "chin_a1" => PIMC.chin_a1,
+            "chin_t0" => PIMC.chin_t0
         )
+
+                
         # HDF5 can't store a heterogeneous Dict at once
         g = create_group(f, "metadata")
         for (k, v) in data["metadata"]
@@ -187,6 +197,7 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
                 end
             end
         end
+        
        
     end
     println("done")

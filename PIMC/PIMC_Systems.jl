@@ -21,11 +21,16 @@ end
 
 
 
-function grad_potential(r::SubArray{T}) where T<:Number
+function grad_potential(r::AbstractArray{T}) where T<:Number
     """∇ V(vecr), gradient of Harmonic oscillator confinement"""
     return r #  mω^2 vecr, units m=1 ω=1
 end
 
+function grad2_potential(r::AbstractArray{T}) where T<:Number
+    """∇^V(vecr), Laplacian of Harmonic oscillator confinement"""
+    # ∇⋅r = dim 
+    return size(r,1) 
+end
 
 function E_exact(β::Float64, dim::Int64, N::Int64)
     """<E> for distinquishable noninteracting boltzmannons per particle per dimension"""
@@ -257,7 +262,7 @@ end
 
 
 
-function potential(r::T) where T<:Number  # liberal argument type For AD 
+function potential(r::T) where T<:Real # liberal argument type For AD 
     """Aziz He-He potential; Unit K"""
     x = r/rm    
     if x < D
@@ -269,7 +274,8 @@ function potential(r::T) where T<:Number  # liberal argument type For AD
 end
 
 
-function der_potential(r::T) where T<:Number 
+
+function der_potential(r::T) where T<:Real
     """Derivative V'(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm"""        
     x   = r/rm
     x2  = x^2
@@ -281,10 +287,32 @@ function der_potential(r::T) where T<:Number
     if x < D
         xD = D/x-1
         F = exp(-(xD^2))
-        dV += -2 * xD * D/x2* F *(c6/x6 + c8/x8 + c10/x10)
+        dV = -2 * xD * D/x2* F *(c6/x6 + c8/x8 + c10/x10)
     end
     dV += aa*(-alpha + 2*beta * x) * exp(-alpha*x+beta*x2) + F*(6*c6/x6+8*c8/x8+10*c10/x10)/x
     dV *= epsil/rm
+    return dV
+end
+
+# tested with AD
+function der2_potential(r::T) where T<:Real
+    """Derivative V''(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm^2"""       
+    x   = r/rm
+    F   = 1.0
+    dF  = 0.0
+    ddF = 0.0
+    xD = D/x-1
+    if x < D  
+        F = exp(-xD^2)
+        dF = 2*D*xD*F/x^2
+        ddF = 4*D^2*xD^2*F/x^4 - 2*D^2*F/x^4 - 4*D*xD*F/x^3
+    end 
+    expo = exp(-alpha*x + beta*x^2)
+    ddV = epsil/rm^2*(2*aa*beta*expo + aa*expo*(-alpha + 2*beta*x)^2 
+                      + (-110*c10/x^12 - 42*c6/x^8 - 72*c8/x^10)*F 
+                      + 2*(10*c10/x^11 + 6*c6/x^7 + 8*c8/x^9)*dF 
+                      + (-c10/x^10 - c6/x^6 - c8/x^8)*ddF)
+    return ddV
 end
 
 
