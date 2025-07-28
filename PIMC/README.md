@@ -3,7 +3,7 @@
 This directory contains a few Python programs mostly for demonstrations and a Julia PIMC program.
 
 # Main Program
-- `PIMC_main.jl` is the main program for PIMC in the canonicals ensemble. 
+- `PIMC_main.jl` is the main program for PIMC in the canonical ensemble. 
  - Reads in the temperature as a command line parameter, for example\
    `julia PIMC_main.jl T=1.0`
    start a PIMC simulation at T=1 (units depend on the system, usually K)
