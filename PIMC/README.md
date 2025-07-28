@@ -15,7 +15,7 @@ This directory contains a few Python programs mostly for demonstrations and a Ju
 	 - `case = 232` liquid He with 32 atoms 
 	 - `case = 264` liquid He with 64 atoms 
 	 - `case = 3` noninteragting bosons in 3D 
- - `PIMC_Systems` potential functions for systems mentioned above
+ - `PIMC_Systems` potential and other functions for test systems mentioned above
  - `PIMC_Moves.jl` PIMC moves (updates): bisection, worm etc.
  - `PIMC_Structs.jl` most Julia structs and PIMC initialization (some already in `PIMC_main.jl`)
  - `PIMC_Measurements.jl` measurements done during PIMC simulation; what and how often is set in `PIMC_main.jl`
