@@ -2,21 +2,17 @@
 JULIA
 
 VMC on a helium atom with trial wave function φ_T
-define in module Model_Heatom
+defined in module Model_Heatom
 
 The Hamiltonian is
 H = -1/2* (nabla_1^2 + nabla_2^2) - 2/r1 - 2/r2 + 1/r12  
 =#
 
-
 import LinearAlgebra: norm
-
-
 using LoopVectorization
 using Printf
 using StaticArrays
 using Statistics
-
 
 # local modules:
 push!(LOAD_PATH,".")
@@ -33,7 +29,8 @@ println("He atom VMC")
 
 const blocksize = 1000000   # data block size
 const Ntherm = 100         # thermalization steps
-const accuracy_goal = 2e-4 
+const accuracy_goal = 2e-4
+
 
 mutable struct Walker
     R     ::MMatrix{dim,N,Float64}
@@ -71,6 +68,7 @@ function main()
     println("===========")
     params = VMC_Params(0,0,0.0)
     walker = init(params)
+    # choose trial wave function parameters defined in Model_Heatom.jl
     trial = :energy_optimized_parameters
     par = get_wave_function_params(trial)
     wf_params = (par.α, par.α12, par.β) # tuple
@@ -84,23 +82,23 @@ function main()
     for i in 1:Ntherm
         vmc_step!(walker.R, params, Ψ_par)
         adjust_step!(params)
-    end
-    walker.ψ = Ψ_par(walker.R)
-    walker.E = EL_par(walker.R)
-        
+    end    
     println("thermalization done")
 
+    println("-"^20," extra checks ","-"^20)
     println("Checking numerically local energy EL against trial wave function Ψ to spot errors in derivatives")
     # Checks could be done more accurately using AD
     for i in 1:5
-        walker.ψ = vmc_step!(walker.R, params, Ψ_par)
+        vmc_step!(walker.R, params, Ψ_par)
         walker.E = EL_par(walker.R)
-        #@show walker.R, walker.ψ, walker.E
         num_check_EL(walker.R, walker.E, Ψ_par, V)
     end
     num_check_∇S(walker.R, Ψ_par, drift_par)
     println("checks passed")
-
+    println("-"^55)
+    println()
+    println()
+    
     # saving to file is slow
     #filename = "E_heatom_VMC"
     #println("Storing energies to file $filename (deleting old file)")
@@ -110,10 +108,10 @@ function main()
     #
     # init E measurement (QMC_Statistics)
     Estat = init_stat(1, blocksize)
-    #    
+    #
     ivmc = 0
     while true # until accuracy_goal is reached
-        walker.ψ = vmc_step!(walker.R, params, Ψ_par)        
+        vmc_step!(walker.R, params, Ψ_par)        
         walker.E = EL_par(walker.R)
 
         # add new energy data
@@ -131,22 +129,20 @@ function main()
         # output when a block is full
         if Estat.finished            
             E_ave, E_std, E_inputvar2, Nb = get_stats(Estat)
-            @printf("VMC %15d E = %.10f <E> = %.10f +/- %.10f\n",ivmc, walker.E,  E_ave, E_std)
+            @printf("VMC %15d E = %.10f <E> = %.10f ± %.10f\n",ivmc, walker.E,  E_ave, E_std)
 
             if Nb>10 && E_std < accuracy_goal
                 println("reached accuracy goal")
-                println("used trial wf ",trial)
+                println("used trial wf parameters from set ",trial)
                 println("Trial wf parameters:")
                 @show par.α
                 @show par.α12
                 @show par.β
                 @printf("input σ^2 = %.6f\n", E_inputvar2)
                 println("result:")
-                output_MCresult(E_ave, E_std)
-                
+                output_MCresult(E_ave, E_std)                
                 break
-            end
-                        
+            end                        
         end
     end
 end
