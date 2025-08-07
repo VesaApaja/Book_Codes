@@ -9,8 +9,6 @@ using Common: VMC_Params
 export vmc_step!, adjust_step!
 
 
-
-
 # one VMC step
 #=
 function vmc_step!(R ::MMatrix, params ::VMC_Params; ln_psi2=missing)
@@ -47,7 +45,7 @@ end
 
 # alternatives
 # ------------
-function vmc_step!(R ::MMatrix, params ::VMC_Params, wf_params ::Vector{Float64})    
+function vmc_step!(R ::MMatrix, params ::VMC_Params, wf_params ::Vector{Float64})
     Ψ = ln_psi2(R, wf_params)
     N = size(R,2)
     @inbounds for i in 1:N
@@ -85,15 +83,17 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
     end
     ΨR = Ψ(R)
     if ΨR < 0.0
-        error("vmc_step! : Ψ(R)<0, this shouldn't happen.")
+        error("Ψ(R)<0, this shouldn't happen.")
     end
     Ψ2 = ΨR^2
     dim = size(R,1)
     N = size(R,2)
+    rrs = rand(dim, N)
+    d = MVector{dim, Float64}(undef)
     for i in 1:N
-        rr = rand(dim)
-        d  = params.step*( rr .- 0.5 )
-        R[:,i] += d
+        rr = @view rrs[:, i]
+        @. d  = params.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ_new = Ψ(R)
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
@@ -117,7 +117,7 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
@@ -131,12 +131,13 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ ::Functio
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)
+    rrs = rand(dim, N)
     # electrons and protons move with different steps
     for i in 1:N
         p = (i <= Nhalf) ? params[1] : params[2]
-        rr = rand(dim)
-        d  = p.step*( rr .- 0.5 )
-        R[:,i] += d
+        rr = @view rrs[:, i]
+        @. d  = p.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ_new = Ψ(R)
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
@@ -153,7 +154,7 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ ::Functio
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
