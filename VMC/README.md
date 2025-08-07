@@ -11,4 +11,5 @@ This directory contains mostly VMC programs.
 - `vmc.heatom.jl` computes the energy of a He atom using the trial wave function defined in Model_Heatom.jl
 # Helpers
 - `Common.jl` defines the structure VMC_Params for acceptance and step size in VMC (and many other things for DMC)
- - `Utilities.jl` defines output format of QMC results (among other things)
+- `Utilities.jl` defines output format of QMC results (among other things)
+- `QMC_Statistics.jl` functions to collect data and evaluate error estimates
