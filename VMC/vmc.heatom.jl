@@ -24,9 +24,6 @@ using QMC_Statistics
 #
 # Parameters
 #
-println("He atom VMC")
-
-
 const blocksize = 1000000   # data block size
 const Ntherm = 100         # thermalization steps
 const accuracy_goal = 2e-4
@@ -38,24 +35,16 @@ mutable struct Walker
     E     ::Float64
 end
 
-# global :
-vmc_params = VMC_Params(0,0,0.0)
-walker = Vector{Walker}(undef, 1) # dummy init
 
 # initialization 
-function init(params ::VMC_Params) ::Walker
-    global walker
-    println("init")
+function init()     
     # 
-    # Initialize a walker
+    # Initialize walker
     #
     R = @MMatrix rand(dim,N)    # coordinates
-    walker = Walker(R, 0.0, 0.0)  # R , ψ=0, E=0
-
-    params.Ntry=0
-    params.Naccept=0
-    params.step = 3.1    
-    walker
+    walker = Walker(R, 0.0, 0.0) # R, ψ=0, E=0    
+    vmc_params = VMC_Params(0,0,3.1)
+    walker, vmc_params
 end
 
        
@@ -66,8 +55,7 @@ function main()
     # initialize
     println("He atom VMC")
     println("===========")
-    params = VMC_Params(0,0,0.0)
-    walker = init(params)
+    walker, vmc_params = init()
     # choose trial wave function parameters defined in Model_Heatom.jl
     trial = :energy_optimized_parameters
     par = get_wave_function_params(trial)
@@ -80,8 +68,8 @@ function main()
     # thermalization
     println("thermalizing")    
     for i in 1:Ntherm
-        vmc_step!(walker.R, params, Ψ_par)
-        adjust_step!(params)
+        vmc_step!(walker.R, vmc_params, Ψ_par)
+        adjust_step!(vmc_params)
     end    
     println("thermalization done")
 
@@ -89,7 +77,7 @@ function main()
     println("Checking numerically local energy EL against trial wave function Ψ to spot errors in derivatives")
     # Checks could be done more accurately using AD
     for i in 1:5
-        vmc_step!(walker.R, params, Ψ_par)
+        vmc_step!(walker.R, vmc_params, Ψ_par)
         walker.E = EL_par(walker.R)
         num_check_EL(walker.R, walker.E, Ψ_par, V)
     end
@@ -111,7 +99,7 @@ function main()
     #
     ivmc = 0
     while true # until accuracy_goal is reached
-        vmc_step!(walker.R, params, Ψ_par)        
+        vmc_step!(walker.R, vmc_params, Ψ_par)        
         walker.E = EL_par(walker.R)
 
         # add new energy data
@@ -119,7 +107,7 @@ function main()
 
         ivmc +=1
         if ivmc%10 == 0                      
-            adjust_step!(params)
+            adjust_step!(vmc_params)
         end
         # saving to file is slow
         #open(filename,"a") do f

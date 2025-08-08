@@ -119,7 +119,7 @@ end
 
 # three-parameter functions
 
-function Ψ(R::MMatrix{dim, N, Float64}, wf_params::Tuple{Float64, Float64, Float64}) where {dim, N}
+function Ψ(R::MMatrix{dim, N, Float64}, wf_params) where {dim, N}
     α, α12, β = wf_params
     r12 = dist2(R, 1, 2)
     r1 = dist1(R, 1)
@@ -129,7 +129,7 @@ function Ψ(R::MMatrix{dim, N, Float64}, wf_params::Tuple{Float64, Float64, Floa
 end
 
 
-function EL(R::MMatrix, wf_params::Tuple{Float64, Float64, Float64})
+function EL(R::MMatrix, wf_params)
     α, α12, β = wf_params
     r12 = norm(R[:,1]-R[:,2])
     r1  = norm(R[:,1])
@@ -142,7 +142,7 @@ function EL(R::MMatrix, wf_params::Tuple{Float64, Float64, Float64})
 end
 
 # 2∇S
-@inline function drift(R::MMatrix, wf_params::Tuple{Float64, Float64, Float64})
+@inline function drift(R::MMatrix, wf_params)
     α, α12, β = wf_params
     hatr1, hatr2, hatr12 =  get_unitvecs(R)
     r12 = norm(R[:,1]-R[:,2])

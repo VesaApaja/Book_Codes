@@ -9,40 +9,6 @@ using Utilities: dist1, dist2
 export vmc_step!, adjust_step!
 
 
-# one VMC step
-#=
-function vmc_step!(R ::MMatrix, params ::VMC_Params; ln_psi2=missing)
-    Ψ = ln_psi2(R)
-    dim = size(R,1)
-    N = size(R,2)
-    @inbounds for i in 1:N
-        rr = @SVector rand(Float64,dim)
-        d   = params.step*( rr .- 0.5 ) ::SVector{dim,Float64}
-        R[:,i] += d
-        Ψ_new = ln_psi2(R)
-        diff = Ψ_new-Ψ        
-        
-        accept = false
-        params.Ntry +=1
-        if diff>=0.0
-            accept = true            
-        else
-            if exp(diff) > rand() 
-                accept = true
-            end
-        end
-        if accept
-            params.Naccept +=1
-            Ψ = Ψ_new            
-        else
-            # revert to old value
-            R[:,i] -= d
-        end        
-    end
-    Ψ
-end
-=#
-
 # alternatives
 # ------------
 function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, wf_params ::Vector{Float64}) where {dim,N}
