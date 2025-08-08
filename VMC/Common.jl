@@ -10,8 +10,6 @@ using CurveFit
 
 import Base: one, zero
 
-# slightly faster norm 
-@inline norm(x) = sqrt(sum(abs2,x))
 
 export Walker, init_walkers, VMC_Params, spinfactor
 export branch!
@@ -344,7 +342,7 @@ end
 end
 
 
-
+"""
 @inline function V(R ::MMatrix, N ::Int64, Z ::Int64) ::Float64
     V = 0.0 ::Float64
     for k in 1:N
@@ -357,7 +355,7 @@ end
     end
     V
 end
-
+"""
 
 
 

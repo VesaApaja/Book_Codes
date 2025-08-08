@@ -6,18 +6,24 @@ export output_MCresult, num_check_EL, num_check_∇S, metro
 export show_vec
 export argparse
 export print_params
+export dist1, dist2
 
-
-# just in case; this was never needed
-@inline function to_float(x)
-    if typeof(x) != Float64
-        # for Dual numbers
-        x = x.value       
+@inline function dist2(R::MMatrix{dim, N, Float64}, i::Int64, j::Int64) where {dim, N}
+    s::Float64 = 0.0
+    @inbounds for k in 1:dim
+        dx = R[k, i] - R[k, j]
+        s += dx*dx
     end
-    x
+    return sqrt(s)
 end
 
-
+@inline function dist1(R::MMatrix{dim, N, Float64}, i::Int64) where {dim, N}
+    s::Float64 = 0.0
+    @inbounds for k in 1:dim
+        s += R[k, i]^2
+    end
+    return sqrt(s)
+end
 
 function print_params(para,txt=""::String)
     @printf("%10s ",txt)

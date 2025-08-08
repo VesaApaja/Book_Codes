@@ -16,7 +16,8 @@ using Printf
 using StaticArrays
 using Statistics
 using LaTeXStrings
-
+using BenchmarkTools
+using InteractiveUtils
 using Plots
 
 using Optimization, OptimizationNLopt, NLopt
@@ -24,7 +25,7 @@ using Random
 
 # local modules:
 push!(LOAD_PATH,".")
-using Common: VMC_Params
+using Common: VMC_Params, WfParams
 using VMCstep
 using Model_Heatom
 using Utilities
@@ -46,52 +47,51 @@ end
 
 #Random.seed!(123414) # For testing only 
 
-# global :
-vmc_params = VMC_Params(0,0,0.0)
-walker = Vector{Walker}(undef, 1) # dummy init
+# globals: 
+#vmc_params = VMC_Params(0,0,0.0)
+#walker = Vector{Walker}(undef, 1) # dummy init
 
 # initialization 
-function init(vmc_params::VMC_Params) 
-    global walker
+function init() 
     println("init ",Nw," walkers")    
     # 
     # Initialize walkers
     #
     R = @MMatrix rand(dim,N)    # coordinates
     walker = [Walker(R, 0.0, 0.0) for i in 1:Nw] # R, ψ=0, E=0    
-    
-    vmc_params.Ntry=0
-    vmc_params.Naccept=0
-    vmc_params.step = 3.1
+    vmc_params = VMC_Params(0,0,3.1)
+    walker, vmc_params
 end
 
 
-function generate_walkers(wf_params)       
-    println("generating walkers with wf_params ",wf_params)
+function generate_walkers(wf_params::Tuple{Float64, Float64, Float64}, vmc_params ::VMC_Params, walker ::Vector{Walker})
+    #println("generating walkers with wf_params ",wf_params)
     # thermalization
-    Ψ_fixed_params(x) = Ψ(x, wf_params)
-    for i in 1:Ntherm
-        vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)      
-    end    
+    Ψ_par(x) = Ψ(x, wf_params) # closure
+    EL_par(x) = EL(x, wf_paarms)
+    @inbounds for i in 1:Ntherm
+        vmc_step!(walker[1].R, vmc_params, Ψ_par)      
+    end
     # generate Nw walkers
-    Eave = 0.0
-    for iw = 1:Nw
-        for i = 1:10 # run walker 1 for a while
-            vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
+    @inbounds begin
+        for iw = 1:Nw
+            for i = 1:10 # run walker 1 for a while
+                vmc_step!(walker[1].R, vmc_params, Ψ_par)
+            end
+            ψR = vmc_step!(walker[1].R, vmc_params, Ψ_par)
+            walker[iw].R = copy(walker[1].R)
+            walker[iw].ψ = ψR
+            walker[iw].E = EL(walker[1].R, wf_params)
         end
-        ψ = vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
-        walker[iw].R = copy(walker[1].R)
-        walker[iw].ψ = ψ
-        walker[iw].E = EL(walker[1].R, wf_params)
-        Eave += walker[iw].E
     end
 end
 
-function get_Eσ(wf_params, correlated::Bool; Esamples = Esamples, ratios = ratios)
+function get_Eσ(wf_params::Tuple{Float64, Float64, Float64}, correlated::Bool, vmc_params ::VMC_Params, walker ::Vector{Walker}
+                ; Esamples = Esamples, ratios = ratios)
     Esamples .= 0.0 
     if correlated        
         ratios .= 0.0 
-        for iw = 1:Nw
+        @inbounds for iw = 1:Nw
             wratio = Ψ(walker[iw].R, wf_params)^2/walker[iw].ψ^2         
             Esamples[iw] = EL(walker[iw].R, wf_params)* wratio
             ratios[iw] = wratio
@@ -99,8 +99,8 @@ function get_Eσ(wf_params, correlated::Bool; Esamples = Esamples, ratios = rati
         r_ave = mean(ratios)
         E_ave = mean(Esamples)/r_ave
     else
-        generate_walkers(wf_params)  #  always generate new walkers 
-        for iw = 1:Nw
+        generate_walkers(wf_params, vmc_params, walker)  #  always generate new walkers 
+        @inbounds for iw = 1:Nw
             Esamples[iw] = EL(walker[iw].R, wf_params)
         end
         E_ave = mean(Esamples)
@@ -125,8 +125,8 @@ end
 function main()
     #
     # Main program 
-    #
-    init(vmc_params)
+    #    
+    walker, vmc_params = init()
    
     println("CORRELATED SAMPLING")
     par = get_wave_function_params(:initial_parameters_for_optimization)
@@ -151,10 +151,9 @@ function main()
     # Correlated sampling
     # -------------------
     println("CORRELATED SAMPLING")
-    
-    generate_walkers((par.α, par.α12, par.β))  # generate walkers only *once*
+    generate_walkers((par.α, par.α12, par.β), vmc_params, walker)  # generate walkers only *once*
     for (i,β) in enumerate(βs)
-        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), true) # true for correlated sampling        
+        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), true, vmc_params, walker) # true for correlated sampling        
     end
     p = plot(βs, Es, yerror = σs, xlabel = L"β",ylabel = L"E(β)",ylimits=(-2.90,-2.84), framestyle=:box,
              label="Correlated sampling")
@@ -165,7 +164,7 @@ function main()
 
     # E_opt(β) closure
     # x is an array, x[1] is β, the second [1] picks E from tuple output E, σ
-    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), true)[1] 
+    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), true, vmc_params, walker)[1] 
     
     println("start optimization from β = ",par.β, " E = ", E_opt(par.β))
     
@@ -193,14 +192,14 @@ function main()
     
     correlated = false
     for (i,β) in enumerate(βs)
-        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), correlated)        
+        Es[i], σs[i] = get_Eσ((par.α, par.α12, β), correlated, vmc_params, walker)        
     end
     p = plot(βs, Es, yerror = σs, xlabel = L"β",ylabel = L"E(β)", ylimits=(-2.90,-2.84), framestyle=:box,
              label="Ordinary sampling")
        
     println("\n\nOptimization of E(β) using algorithm bobyqa\n")
     
-    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), false)[1]  # false for non-correlated samples 
+    E_opt = x -> get_Eσ((par.α, par.α12, x[1]), false, vmc_params, walker)[1]  # false for non-correlated samples 
     min_objective!(opt, (x, _) -> E_opt(x))
     println("start optimization from β = ",par.β, " E = ", E_opt(par.β))
     (E_min, wf_params_opt, ret) = optimize(opt, [par.β])

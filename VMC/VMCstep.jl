@@ -1,11 +1,11 @@
 module VMCstep
 
 using StaticArrays
-using LinearAlgebra: norm
+using Random: rand!
 
 push!(LOAD_PATH,".")
 using Common: VMC_Params
-
+using Utilities: dist1, dist2
 export vmc_step!, adjust_step!
 
 
@@ -45,9 +45,8 @@ end
 
 # alternatives
 # ------------
-function vmc_step!(R ::MMatrix, params ::VMC_Params, wf_params ::Vector{Float64})
+function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, wf_params ::Vector{Float64}) where {dim,N}
     Ψ = ln_psi2(R, wf_params)
-    N = size(R,2)
     @inbounds for i in 1:N
         rr = @SVector rand(dim)
         
@@ -76,8 +75,13 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params, wf_params ::Vector{Float64}
     Ψ
 end
 
-function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
+const buf = Vector{Float64}(undef, 1024 * 3) # max_N * max_dim
+const d_buf = MVector{3, Float64}(undef)
+
+function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {dim,N}
+    #  Ψ must be callable (function or functor)
     # sanity:
+    @assert N <= 1024
     if params.step<1e-15
         error("VMC step is zero")
     end
@@ -86,11 +90,10 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
         error("Ψ(R)<0, this shouldn't happen.")
     end
     Ψ2 = ΨR^2
-    dim = size(R,1)
-    N = size(R,2)
-    rrs = rand(dim, N)
-    d = MVector{dim, Float64}(undef)
-    for i in 1:N
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
+    @inbounds for i in 1:N
         rr = @view rrs[:, i]
         @. d  = params.step*( rr - 0.5 )
         R[:, i] += d
@@ -127,7 +130,7 @@ end
 # Used in H2 code
 # Not to be used with a wave function that has nodes
 #
-function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ ::Function) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ) where {dim,N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)
@@ -167,7 +170,7 @@ end
 
 export vmc_step_H2!
     
-function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ ::Function) where {dim,N}
+function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ) where {dim,N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)    
@@ -199,7 +202,7 @@ end
 
 
 
-function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ ::Function) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ) where {dim,N}
     ΨR(x) = Ψ(x, wf_params)
     Ψ2 = ΨR(R)^2
     @inbounds for i in 1:N

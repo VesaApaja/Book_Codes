@@ -3,6 +3,12 @@ module Model_Heatom
 using StaticArrays
 using LinearAlgebra: norm
 
+
+push!(LOAD_PATH,".")
+using Utilities: dist1, dist2
+
+
+
 export EL, drift, ln_psi2, Ψ, N, dim, Eexact,  λ
 export V
 export trial, α, α12, β
@@ -61,7 +67,7 @@ end
 end
 
 # potential energy
-function V(R ::MMatrix)
+@inline function V(R::MMatrix{dim,N,Float64})
     r12 = norm(R[:,1]-R[:,2])
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
@@ -113,17 +119,17 @@ end
 
 # three-parameter functions
 
-function Ψ(R::MMatrix, wf_params)
+function Ψ(R::MMatrix{dim, N, Float64}, wf_params::Tuple{Float64, Float64, Float64}) where {dim, N}
     α, α12, β = wf_params
-    r12 = norm(R[:,1]-R[:,2])
-    r1 = norm(R[:,1])
-    r2 = norm(R[:,2])
+    r12 = dist2(R, 1, 2)
+    r1 = dist1(R, 1)
+    r2 = dist1(R, 2)
     b = 1+β*r12
     exp(-α*(r1+r2) + α12*r12/b)
 end
 
 
-function EL(R::MMatrix, wf_params)
+function EL(R::MMatrix, wf_params::Tuple{Float64, Float64, Float64})
     α, α12, β = wf_params
     r12 = norm(R[:,1]-R[:,2])
     r1  = norm(R[:,1])
@@ -136,7 +142,7 @@ function EL(R::MMatrix, wf_params)
 end
 
 # 2∇S
-@inline function drift(R::MMatrix, wf_params)
+@inline function drift(R::MMatrix, wf_params::Tuple{Float64, Float64, Float64})
     α, α12, β = wf_params
     hatr1, hatr2, hatr12 =  get_unitvecs(R)
     r12 = norm(R[:,1]-R[:,2])
@@ -209,7 +215,7 @@ end
 #   :=  sum_k ck^2*exp(Sk) + (1<->2) 
 #   Sk :=  -α1*r1 - α2*r2 - α12*r12 
 #    
-# ln(|Ψ|^2) = 2ln|\Psi| = 2*ln( sum_k ck*exp(Sk) + (1<->2) )
+# ln(|Ψ|^2) = 2ln|Ψ| = 2*ln( sum_k ck*exp(Sk) + (1<->2) )
 # ∇Ψ_i =  sum_k ck*exp(Sk) ∇_iSk +  (1<->2)  
 # drift_i := 2(∇_iΨ)/Ψ = 2/Ψ* [ sum_k ck*exp(Sk) ∇Sk  + (1<->2) ]
 #       
