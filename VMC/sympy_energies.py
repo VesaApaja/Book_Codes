@@ -12,7 +12,7 @@ def E(Z,alpha):
     Nel = Z
     return Z*(E_kin-Z*alpha)+Rational(Nel*(Nel-1),2)*E_ee
 
-print('Theoretical bosonic energies, nucleus mass is infinite')
+print('Theoretical bosonic energies for 1S Ansatz, nucleus mass is infinite')
 for i,atom in enumerate(atoms):
     Z = i+1
     ex = exacts[i]
