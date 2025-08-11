@@ -42,43 +42,36 @@ end
 
 #Random.seed!(123414) # For testing only
 
- # global :
-vmc_params = VMC_Params(0,0,0.0)
-walker = Vector{Walker}(undef, 1) # dummy init
-
-
+ 
 # initialization 
-function init(vmc_params ::VMC_Params)
-    global walker
+function init() 
     println("init ",Nw," walkers")    
     # 
     # Initialize walkers
     #
-    R = @MMatrix rand(dim,N)     # coordinates
+    R = @MMatrix rand(dim,N)    # coordinates
     walker = [Walker(R, 0.0, 0.0) for i in 1:Nw] # R, ψ=0, E=0    
-    
-    vmc_params.Ntry=0
-    vmc_params.Naccept=0
-    vmc_params.step = 3.1    
+    vmc_params = VMC_Params(0,0,3.1)
+    walker, vmc_params
 end
 
 
 # Correlated sampling functions
 # -----------------------------
-function generate_walkers(wf_params::Vector{Float64})   
+function generate_walkers(wf_params::Vector{Float64}, vmc_params ::VMC_Params, walker ::Vector{Walker})   
     # thermalization
-    Ψ_fixed_params(x) = Ψ(x, wf_params)
+    Ψ_par(x) = Ψ(x, wf_params) # closure
     for i in 1:Ntherm
-        vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)      
+        vmc_step!(walker[1].R, vmc_params, Ψ_par)      
     end
     println("generating walkers")
     # generate Nw walkers
     Eave = 0.0
     for iw = 1:Nw
         for i = 1:10 # run walker 1 for a while
-            vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
+            vmc_step!(walker[1].R, vmc_params, Ψ_par)            
         end
-        ψ = vmc_step!(walker[1].R, vmc_params, Ψ_fixed_params)            
+        ψ = vmc_step!(walker[1].R, vmc_params, Ψ_par)            
         walker[iw].R = copy(walker[1].R)
         walker[iw].ψ = ψ
         walker[iw].E = EL(walker[1].R, wf_params)
@@ -88,9 +81,9 @@ function generate_walkers(wf_params::Vector{Float64})
     println("done")
 end
     
-function get_correlated_Eσ(wf_params)
-    Esamples = Array{Float64, 1}(undef, Nw)
-    ratios = Array{Float64, 1}(undef, Nw)
+function get_correlated_Eσ(wf_params::Vector{Float64}, walker::Vector{Walker})
+    Esamples = Vector{Float64}(undef, Nw)
+    ratios = Vector{Float64}(undef, Nw)
     for iw = 1:Nw
         wratio = Ψ(walker[iw].R, wf_params)^2/walker[iw].ψ^2         
         Esamples[iw] = EL(walker[iw].R, wf_params)* wratio
@@ -108,12 +101,11 @@ function get_correlated_Eσ(wf_params)
 end
 
 # driver for bobyqa
-function E_opt_correlated(wf_params)
-    E_ave, σ = get_correlated_Eσ(wf_params)
-    E_ave
+function make_correlated_E_driver(walker)
+    wf_params -> get_correlated_Eσ(wf_params, walker)[1] # use only 1st of the tuple
 end
 
-function get_correlated_σ2(wf_params)
+function get_correlated_σ2(wf_params, walker::Vector{Walker})
     Eguess = 0.0
     for iw = 1:Nw
         Eguess += walker[iw].E
@@ -138,10 +130,10 @@ function get_correlated_σ2(wf_params)
 end
 
 # driver for bobyqa
-function σ2_opt_correlated(wf_params)    
-    σ2_ave, σ = get_correlated_σ2(wf_params)
-    σ2_ave
+function make_correlated_σ_driver(walker)
+    wf_params -> get_correlated_σ2(wf_params, walker)[1] # use only 1st of the tuple
 end
+
 
 
 function main()
@@ -149,7 +141,7 @@ function main()
     # Main program 
     #
    
-    init(vmc_params)
+    walker, vmc_params =  init()
    
     println("CORRELATED SAMPLING")
     par = get_wave_function_params(:initial_parameters_for_optimization)
@@ -162,9 +154,11 @@ function main()
     wf_params = copy(u0)  
 
     println("start with parameters = ", wf_params)
-    generate_walkers(wf_params)  # generate walkers only *once*
+    generate_walkers(wf_params, vmc_params, walker)  # generate walkers only *once*
 
-    E_u0, σ_u0 = get_correlated_Eσ(wf_params)
+    E_u0, σ_u0 = get_correlated_Eσ(wf_params, walker)
+
+    
     @printf("initial correlated energy %15.5f variance %15.5f\n", E_u0, σ_u0)
     # limits
     # optimize all parameters
@@ -188,6 +182,7 @@ function main()
     maxeval!(opt, 100000)   # Maximum number of evaluations
     
     # Define objective
+    E_opt_correlated =  make_correlated_E_driver(walker)    
     min_objective!(opt, (x, _) -> E_opt_correlated(x))
 
     (E_ene_min, wf_params_ene_min, ret) = optimize(opt, u0)
@@ -209,6 +204,7 @@ function main()
     println("start with parematers = ", wf_params)
 
     # Define objective
+    σ2_opt_correlated =  make_correlated_σ_driver(walker)    
     min_objective!(opt, (x, _) -> σ2_opt_correlated(x))
 
     (σ2_min, wf_params_var_min, ret) = optimize(opt, u0)
