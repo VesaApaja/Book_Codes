@@ -44,7 +44,7 @@ end
 const buf = Vector{Float64}(undef, 1024 * 3) # max_N * max_dim
 const d_buf = MVector{3, Float64}(undef)
 
-function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {dim,N}
+function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ::Function) where {dim,N}
     #  Ψ must be callable (function or functor)
     # sanity:
     @assert N <= 1024
@@ -96,7 +96,7 @@ end
 # Used in H2 code
 # Not to be used with a wave function that has nodes
 #
-function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ::Function) where {dim,N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)
@@ -136,7 +136,7 @@ end
 
 export vmc_step_H2!
     
-function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ) where {dim,N}
+function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ::Function) where {dim,N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)    
@@ -168,7 +168,7 @@ end
 
 
 
-function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ::Function) where {dim,N}
     ΨR(x) = Ψ(x, wf_params)
     Ψ2 = ΨR(R)^2
     @inbounds for i in 1:N
