@@ -1,99 +1,38 @@
 module VMCstep
 
 using StaticArrays
-using LinearAlgebra: norm
+using Random: rand!
 
 push!(LOAD_PATH,".")
 using Common: VMC_Params
-
+using Utilities: dist1, dist2
 export vmc_step!, adjust_step!
 
 
+const buf = Vector{Float64}(undef, 1024 * 3) # max_N * max_dim
+const d_buf = MVector{3, Float64}(undef)
 
-
-# one VMC step
-#=
-function vmc_step!(R ::MMatrix, params ::VMC_Params; ln_psi2=missing)
-    Ψ = ln_psi2(R)
-    dim = size(R,1)
-    N = size(R,2)
-    @inbounds for i in 1:N
-        rr = @SVector rand(Float64,dim)
-        d   = params.step*( rr .- 0.5 ) ::SVector{dim,Float64}
-        R[:,i] += d
-        Ψ_new = ln_psi2(R)
-        diff = Ψ_new-Ψ        
-        
-        accept = false
-        params.Ntry +=1
-        if diff>=0.0
-            accept = true            
-        else
-            if exp(diff) > rand() 
-                accept = true
-            end
-        end
-        if accept
-            params.Naccept +=1
-            Ψ = Ψ_new            
-        else
-            # revert to old value
-            R[:,i] -= d
-        end        
-    end
-    Ψ
-end
-=#
 
 # alternatives
 # ------------
-function vmc_step!(R ::MMatrix, params ::VMC_Params, wf_params ::Vector{Float64})    
-    Ψ = ln_psi2(R, wf_params)
-    N = size(R,2)
-    @inbounds for i in 1:N
-        rr = @SVector rand(dim)
-        
-        d   = params.step*( rr .- 0.5 ) ::SVector{dim,Float64}
-        R[:,i] += d
-        Ψ_new = ln_psi2(R, wf_params)
-        diff = Ψ_new-Ψ        
-        
-        accept = false
-        params.Ntry +=1
-        if diff>=0.0
-            accept = true            
-        else
-            if exp(diff) > rand() 
-                accept = true
-            end
-        end
-        if accept
-            params.Naccept +=1
-            Ψ = Ψ_new
-        else
-            # revert to old value
-            R[:,i] -= d
-        end        
-    end
-    Ψ
-end
-
-function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
-    # sanity:
+function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ::Function) where {dim,N}
+    # sanity checks:
+    @assert N <= 1024
     if params.step<1e-15
         error("VMC step is zero")
     end
     ΨR = Ψ(R)
     if ΨR < 0.0
-        error("vmc_step! : Ψ(R)<0, this shouldn't happen.")
+        error("Ψ(R)<0, this shouldn't happen.")
     end
     Ψ2 = ΨR^2
-    dim = size(R,1)
-    N = size(R,2)
-    for i in 1:N
-        rr = rand(dim)
-        d  = params.step*( rr .- 0.5 )
-        R[:,i] += d
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
+    @inbounds for i in 1:N
+        rr = @view rrs[:, i]
+        @. d  = params.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ_new = Ψ(R)
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
@@ -117,7 +56,7 @@ function vmc_step!(R ::MMatrix, params ::VMC_Params, Ψ ::Function)
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
@@ -127,16 +66,19 @@ end
 # Used in H2 code
 # Not to be used with a wave function that has nodes
 #
-function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ ::Function) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ::Function) where {dim,N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
     # electrons and protons move with different steps
     for i in 1:N
         p = (i <= Nhalf) ? params[1] : params[2]
-        rr = rand(dim)
-        d  = p.step*( rr .- 0.5 )
-        R[:,i] += d
+        rr = @view rrs[:, i]
+        @. d  = p.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ_new = Ψ(R)
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
@@ -153,7 +95,7 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ ::Functio
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
@@ -166,14 +108,17 @@ end
 
 export vmc_step_H2!
     
-function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ ::Function) where {dim,N}
+function vmc_step_H2!(R ::MMatrix{dim, N}, p ::VMC_Params, Ψ::Function) where {dim, N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
-    Nhalf = Int(N/2)    
-    for i in 1:Nhalf        
-        rr = rand(dim)
-        d  = p.step*( rr .- 0.5 )
-        R[:,i] += d
+    Nhalf = Int(N/2)
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
+    for i in 1:Nhalf
+        rr = @view rrs[:, i]
+        @. d  = p.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ_new = Ψ(R)
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
@@ -190,7 +135,7 @@ function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ ::Function) where {
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
@@ -198,13 +143,16 @@ end
 
 
 
-function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ ::Function) where {dim,N}
+function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ::Function) where {dim,N}
     ΨR(x) = Ψ(x, wf_params)
     Ψ2 = ΨR(R)^2
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
     @inbounds for i in 1:N
-        rr = @SVector rand(dim)
-        d   = params.step*( rr .- 0.5 )
-        R[:,i] += d
+        rr = @view rrs[:, i]
+        @. d   = params.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ2_new = ΨR(R)^2
         ratio = Ψ2_new/Ψ2
         # Metropolis:
@@ -222,7 +170,7 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{F
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)

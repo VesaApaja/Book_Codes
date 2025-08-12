@@ -152,61 +152,6 @@ end
 end
 
 
-
-#=
-# Variable wf parameter codes
-# ===========================
-# parameters  α1, α2, α12, β
-function Elocal(R ::MMatrix, wf_params ::Vector)
-    α1, α2, α12, β = wf_params
-    if α1 != α2
-        @show(α1)
-        @show(α2)
-        println("Error: Elocal(R,wf_params) should be used with α1 = α2")
-        exit()
-    end
-    r12 = norm(R[:,1]-R[:,2])
-    r1  = norm(R[:,1])
-    r2  = norm(R[:,2])
-    hatr1, hatr2, hatr12 = get_unitvecs(R)
-    b = 1+β*r12
-    ∇S = 0.5*drift(R, wf_params)
-    ∇2S = -α1*2/r1 -α2*2/r2  + 4*α12/b^3*1/r12 
-    Elocal = -0.5*(sum(∇S.^2) + ∇2S)  - Z/r1 - Z/r2 + 1/r12
-end
-
-
-@inline function drift(R ::MMatrix, wf_params ::Vector)
-    α1, α2, α12, β = wf_params
-    if α1 != α2
-        @show(α1)
-        @show(α2)
-        println("Error: drift(R,wf_params) should be used with α1 = α2")
-        exit()
-    end
-    hatr1, hatr2, hatr12 =  get_unitvecs(R)
-    r12 = norm(R[:,1]-R[:,2])
-    b = 1+β*r12    
-    ∇S = hcat(-α1*hatr1 + α12/b^2*hatr12, -α2*hatr2 - α12/b^2*hatr12)
-    2*∇S #  symmetric only if α1=α2
-end
-=#
-
-function ln_psi2(R ::MMatrix, wf_params ::Vector)
-    α1, α2, α12, β = wf_params
-    if α1 != α2
-        @show(α1)
-        @show(α2)
-        println("Error: ln_psi2(R,wf_params) should be used with α1 = α2")
-        exit()
-    end
-    r12 = norm(R[:,1]-R[:,2])
-    r1 = norm(R[:,1])
-    r2 = norm(R[:,2])
-    b = 1+β*r12
-    Ψlog_12 = 2*(-α1*r1 - α2*r2 + α12*r12/b)  # symmetric only if α1=α2
-end
-
 # Multiparameter functions
 # ------------------------
 # parameters c, α1, α2, α12, β
@@ -223,7 +168,7 @@ end
 # TL = -1/2*Σ_i (∇_i^2Ψ)/Ψ = -1/(2Ψ)* [ sum_k ck^2*exp(Sk) Σ_i(∇_i^2Sk + (∇_iSk)^2)  + (1<->2) ] 
 # EL = TL + V(R)
 #
-@inline function Elocal_multi(R ::MMatrix, wf_params ::Vector)    
+@inline function Elocal_multi(R ::MMatrix, wf_params ::Vector{Float64})    
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
     r12 = norm(R[:,1]-R[:,2])
@@ -252,7 +197,7 @@ end
 # drift_i := 2∇_iΨ/Ψ = 2/Ψ* [ sum_k ck*exp(Sk) ∇_iSk  + (1<->2) ]
 # ∇_iΨ =  sum_k ck*exp(Sk) ∇_iSk +  (1<->2)
 # Careful not to mix ∇_1 Ψ and ∇_2 Ψ, the gradients are *not* supposed to be symmetrized
-@inline function drift_multi(R ::MMatrix, wf_params ::Vector)
+@inline function drift_multi(R ::MMatrix, wf_params ::Vector{Float64})
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
     r12 = norm(R[:,1]-R[:,2])
@@ -284,7 +229,7 @@ end
 # ψ = [  sum_k ck*exp(-α1*r1 - α2*r2 - α12*r12)  + (1<->2) ]
 #   := [ sum_k ck*exp(Sk) + (1<->2) ]
 #   Sk :=  -α1*r1 - α2*r2 - α12*r12 
-@inline function psi_multi(R ::MMatrix, wf_params ::Vector)
+@inline function psi_multi(R ::MMatrix, wf_params ::Vector{Float64})
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
     r12 = norm(R[:,1]-R[:,2])
@@ -303,7 +248,7 @@ end
 # ψ = [  sum_k ck*exp(-α1*r1 - α2*r2 -α12*r12)  + (1<->2) ]
 #   := [ sum_k ck*exp(Sk) + (1<->2) ]
 #   Sk :=  -α1*r1 - α2*r2 - α12*r12 
-@inline function ln_psi2_multi(R ::MMatrix, wf_params ::Vector)
+@inline function ln_psi2_multi(R ::MMatrix, wf_params ::Vector{Float64})
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
     r12 = norm(R[:,1]-R[:,2])
@@ -322,7 +267,7 @@ end
 end
 
 # Ψ_i/Ψ 
-@inline function Ψ_i_per_Ψ_multi(R ::MMatrix, wf_params ::Vector)
+@inline function Ψ_i_per_Ψ_multi(R ::MMatrix, wf_params ::Vector{Float64})
     r1  = norm(R[:,1])
     r2  = norm(R[:,2])
     r12 = norm(R[:,1]-R[:,2])

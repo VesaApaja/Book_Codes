@@ -249,10 +249,6 @@ function update_wf_params(a::WfParams, x::MVector{T}) where T
 end
 
 
-
-
-
-
 mutable struct VMC_Params
     Ntry :: Int64
     Naccept :: Int64
@@ -546,7 +542,6 @@ end
 
 # Common DMC functions
 # ====================
-
 
 
 function branch!(walker ::Vector{Walker}, copies ::MVector, alives ::Set{Int64})

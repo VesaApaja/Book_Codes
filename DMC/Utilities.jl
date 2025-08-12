@@ -6,18 +6,24 @@ export output_MCresult, num_check_EL, num_check_∇S, metro
 export show_vec
 export argparse
 export print_params
+export dist1, dist2
 
-
-# just in case; this was never needed
-@inline function to_float(x)
-    if typeof(x) != Float64
-        # for Dual numbers
-        x = x.value       
+@inline function dist2(R::MMatrix{dim, N, Float64}, i::Int64, j::Int64) where {dim, N}
+    s::Float64 = 0.0
+    @inbounds for k in 1:dim
+        dx = R[k, i] - R[k, j]
+        s += dx*dx
     end
-    x
+    return sqrt(s)
 end
 
-
+@inline function dist1(R::MMatrix{dim, N, Float64}, i::Int64) where {dim, N}
+    s::Float64 = 0.0
+    @inbounds for k in 1:dim
+        s += R[k, i]^2
+    end
+    return sqrt(s)
+end
 
 function print_params(para,txt=""::String)
     @printf("%10s ",txt)
@@ -184,7 +190,7 @@ function num_check_EL(R ::MMatrix, EL_in, Ψ ::Function, V ::Function)
     EL_num =  TL_num + V(R)
     diff = (EL_in-EL_num)/EL_num
     @printf("EL check: analytical: %20.12f numerical: %20.12f  rel. difference: %20.12e\n", EL_in,EL_num,diff)
-    if abs(diff)>1e-4
+    if abs(diff)>1e-4 || isnan(diff)
         @printf("EL check: analytical: %20.12f numerical: %20.12f  rel. difference: %20.12e\n", EL_in,EL_num,diff)
         error("EL check failed")
     end
@@ -222,7 +228,7 @@ function num_check_∇S(R ::MMatrix, Ψ ::Function, drift ::Function)
             ∇S_num = (S_p-S_m)/(2h)
             diff = (∇S[k,i]-∇S_num)/∇S[k,i]
             #@printf("∇S check: analytical: %20.12f numerical: %20.12f  rel difference: %20.12e\n",∇S[k,i],∇S_num,diff)
-            if abs(diff)>1e-4
+            if abs(diff)>1e-4 || isnan(diff)
                 println(k," ",i)
                 @printf("∇S check: analytical: %20.12f numerical: %20.12f  rel difference: %20.12e\n",∇S[k,i],∇S_num,diff)
                 error("∇S check failed")
