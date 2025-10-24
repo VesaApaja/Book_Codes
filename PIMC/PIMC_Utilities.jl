@@ -1,6 +1,7 @@
 __precompile__(false)
 module PIMC_Utilities
 
+using LinearAlgebra
 using StaticArrays
 push!(LOAD_PATH,".")
 using PIMC_Common
@@ -11,7 +12,7 @@ export store_X!, restore_X!, storage
 export rho_0, active_beads_on_slice, bisection_segment!
 export generate_path!
 export backup_state!, restore_state!
-
+export boson_virial_exchange_energy, E_pot, E_pot_bead
 export save_paths
 export argparse
 
@@ -169,6 +170,157 @@ end
     end
 end
 
+
+function E_pot_all(PIMC::t_pimc, beads::t_beads)
+    """Potential energy of the whole system"""
+
+    Epot = 0.0
+    ms = get_ms(PIMC.M)
+    for m in ms
+        # all active beads on slice m
+        bs = active_beads_on_slice(beads, m)
+        Xv = @view beads.X[:, bs]        
+        if PIMC.confinement_potential !== nothing
+            Epot += sum(PIMC.confinement_potential(Xv))            
+        end
+        if PIMC.pair_potential !== nothing
+            V = PIMC.pair_potential
+            L = PIMC.L
+            #t1 = @elapsed begin            
+            nbs = length(bs)               
+            if pbc
+                # beads on different world lines, use min. image dist for pbc                
+                # cutoff at L/2
+                dXs = Float64[]  
+                @inbounds for i in 1:nbs-1
+                    @inbounds for j in i+1:nbs
+                        d = dist(view(Xv, :, i), view(Xv, :, j), L)
+                        if d ≤ L/2
+                            push!(dXs, d)
+                        end
+                    end
+                end
+            else
+                dXs  = [norm(Xv[:, i]-Xv[:, j]) for i in 1:nbs-1 for j in i+1:nbs]                
+            end
+            Epot += sum(V.(dXs))
+            #=
+            #end
+            #t2 = @elapsed begin
+            # non-vectorized form, almost always slower
+            nbs = length(bs)
+            Etest = 0
+            id_pairs = [(bs[i], bs[j]) for i in 1:nbs-1 for j in i+1:nbs]
+            for (id1, id2) in id_pairs        
+                r1 = @view beads.X[:, id1]
+                r2 = @view beads.X[:, id2]
+                # beads on different world lines, use min. image dist for pbc
+                r12 = dist(r1, r2, L)
+                if r12 ≤ L/2
+                    Etest += V(r12)
+                end
+            end
+            Epot += Etest
+        
+            #@show Etest/N, sum(V.(dXs))# , t1, t2, t1<t2
+            =#
+            
+        end          
+    end
+    if PIMC.pair_potential !== nothing
+        Epot += PIMC_Common.Vtail*N # add tail correction, if any
+    end
+    return Epot/length(ms) # works for both prim and chin
+end
+
+#
+# Generic energy computations
+# ===========================
+#
+function E_pot_bead(PIMC::t_pimc, beads::t_beads, id::Int64)
+    """Potential energy of bead id"""    
+    Epot::Float64 = 0.0 
+    # an inactive bead has no potential energy
+    beads.active[id]==false && (return Epot)
+
+    r1 = @view beads.X[:, id]
+    if PIMC.confinement_potential !== nothing        
+        Epot += PIMC.confinement_potential(r1)
+    end
+    if PIMC.pair_potential !== nothing
+        V = PIMC.pair_potential
+        L = PIMC.L
+        t = beads.ts[id]        
+        # active beads on slice t not equal to id
+        bs = filter(x -> x ≠ id, active_beads_on_slice(beads, t))
+        #
+        # vectorized form
+        #    nbs = length(bs)
+        #    Xv = @view beads.X[:, bs]
+        #    # beads on different world lines, use min. image dist for pbc
+        #    dXs  = [dist(Xv[:, i], r1, L) for i in 1:nbs]
+        #    Epot += sum(Vs(dXs))            
+        
+        # non-vectorized form is a bit faster
+        if pbc
+            @inbounds for id2 in bs
+                # beads on different world lines, use min. image dist for pbc
+                r = dist(r1, view(beads.X, :, id2), L)
+                r > L/2 && continue #cutoff
+                Epot += V(r)
+            end
+            Epot += PIMC_Common.Vtail # add tail correction, if any
+        else
+            @inbounds for id2 in bs                   
+                Epot += V(norm(r1 - view(beads.X, :, id2)))
+            end
+        end
+        
+    end
+    return Epot
+end
+function boson_virial_exchange_energy(PIMC::t_pimc, beads::t_beads, links::t_links)
+    """Boson virial estimator exchange energy term for co-moving centroid reference."""
+
+    if !bose
+        error("Boson virial estimator works only for bosons :)")
+    end
+    M = PIMC.M
+    L = PIMC.L
+    β = PIMC.β
+    τ = PIMC.τ
+    
+    # exchange energy term
+    
+    dx_long = zeros(dim)  # pre-allocate 
+    dx_short = zeros(dim) 
+    r = zeros(dim)
+    
+    Δτ = 0.0 
+    Eexc = 0.0
+    dr = zeros(dim)
+    for idm in beads.ids[beads.active]
+        r_m = @view beads.X[:,idm] # X_m 
+        r .= r_m  # displacements are relative to r (updated along the way)
+        id = idm
+        for m in 1:M
+            id = links.next[id]
+            distance!(view(beads.X, :, id), view(r,:), L, dr)
+            if m==M-1
+                # X_M+m - X_M+m-1, short distance vector
+                dx_short .= dr
+                Δτ = mod(beads.times[id] - beads.times[links.prev[id]], β)        
+            end
+            r .+= dr
+        end
+        r_Mm = r # X_M+m
+        # long continuous path vector (on same slice), *not* min. image distance         
+        dx_long .= r_Mm - r_m  # X_M+m - X_m
+        Eexc += dx_long ⋅ dx_short/Δτ  
+    end
+    Eexc *= -1/(4*λ*M*β)
+    Eexc
+end
 
 # just for generate_path:
 const vec_gene1 = MVector{dim, Float64}(undef)
