@@ -21,7 +21,7 @@ This directory contains a few Python programs mostly for demonstrations and a Ju
  - `PIMC_Measurements.jl` measurements done during PIMC simulation; what and how often is set in `PIMC_main.jl`
  - `PIMC_Reports.jl` what to print on screen or to the results HFD5 otput file
  - `PIMC_Primitive_Action.jl` and `PIMC_Chin_Action.jl` primitive action and Chin action, with specific energy estimators
- - `PIMC_Action_Interface.jl` interface to facilitate choosing action-specific routine
+ - `PIMC_Action_Interface.jl` common interface to choosing between actions
  - `PIMC_Utilities.jl` short utility programs
  - `QMC_Statistics.jl` functions to collect samples and block data for error estimation (same as in DMC)
  
