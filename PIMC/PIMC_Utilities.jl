@@ -1,6 +1,7 @@
 __precompile__(false)
 module PIMC_Utilities
 
+using StaticArrays
 push!(LOAD_PATH,".")
 using PIMC_Common
 using PIMC_Structs:t_beads, t_links, t_pimc
@@ -8,6 +9,7 @@ using PIMC_Structs:t_beads, t_links, t_pimc
 export distance_check
 export store_X!, restore_X!, storage
 export rho_0, active_beads_on_slice, bisection_segment!
+export generate_path!
 export backup_state!, restore_state!
 
 export save_paths
@@ -19,8 +21,8 @@ export argparse
 # ArgParse would do this, but I hate to load yet another package
 
 function argparse(known_args ::Vector{String})
-    if length(ARGS)==0; return ; end
-
+    if length(ARGS)==0; return nothing ; end
+    
     got_args = Dict() 
     for arg in ARGS
         if occursin("=",arg)
@@ -167,6 +169,91 @@ end
     end
 end
 
+
+# just for generate_path:
+const vec_gene1 = MVector{dim, Float64}(undef)
+const vec_gene2 = MVector{dim, Float64}(undef)
+const vec_gene3 = MVector{dim, Float64}(undef)
+const vec_gene4 = MVector{dim, Float64}(undef)
+const vec_gene5 = MVector{dim, Float64}(undef)
+
+function generate_path!(PIMC::t_pimc, beads::t_beads, links::t_links, idlist::AbstractVector{Int64})
+    """Generates a free-particle path between known beads idlist[1] and idlist[end] using staging; updates links."""
+    #
+    # Generated beads are not activated! 
+    #
+    M = PIMC.M
+    τ = PIMC.τ
+    β = PIMC.β
+    L = PIMC.L
+    #
+    start_bead = idlist[1]
+    end_bead   = idlist[end]
+    t_start = beads.ts[start_bead]
+    t_end   = beads.ts[end_bead]
+
+    K = length(idlist)
+    
+    if K==2
+        #      1        K=2
+        # start_bead  end_bead
+        # No path to generate, just close the link
+        links.next[start_bead] = end_bead
+        links.prev[end_bead]   = start_bead
+        return nothing
+    end
+
+    #      1      2 3 ...    K-1    K
+    # start_bead   new beads      end_bead
+    # Generate new beads using staging
+
+    r_left = vec_gene5
+    @inbounds @views r_left .= beads.X[:, start_bead] # r_left changes in iteration, beads.X[:, start_bead] is not changed
+    r_end = @view beads.X[:, end_bead]   # fixed
+    t_end = beads.times[end_bead]        # fixed
+
+    r_m = vec_gene1
+    r_m_star = vec_gene2
+    r_right = vec_gene3    
+    dr = vec_gene4
+    
+    id_left = start_bead
+    @inbounds begin
+        for m in 2:K-1        
+            id = idlist[m] 
+            #        
+            τ_left = mod(beads.times[id] -  beads.times[id_left], β)
+            τ_right = mod(t_end -  beads.times[id], β)
+            τ = 1/(1/τ_left + 1/τ_right) 
+            σ = sqrt(2λ*τ)
+            #
+            distance!(r_end, view(r_left, :), L, dr) # dr = r_end - r_left periodically
+            
+            for d in 1:dim
+                r_right[d] = r_left[d] + dr[d]
+                r_m_star[d] = (τ_right*r_left[d] + τ_left*r_right[d])/(τ_left + τ_right)         
+                # new bead position        
+                r_m[d] = r_m_star[d] +  σ * randn()
+                if pbc 
+                    r_m[d] = mod(r_m[d] + L/2, L) - L/2
+                end            
+                beads.X[d, id] = r_m[d]
+            end
+            # link previous bead to new bead
+            links.next[id_left] = id
+            links.prev[id] = id_left
+            # assign r_m as the known bead r_left; careful not to set them same forever!
+            id_left = id
+            @views r_left .= r_m        
+        end
+    end
+    
+    # link last generated bead to end_bead
+    id = idlist[K-1]
+    links.next[id] = end_bead
+    links.prev[end_bead] = id
+    return nothing
+end
 
 
 @inline function rho_0(r1::SubArray{Float64}, r2::SubArray{Float64}, λ::Float64, τ12::Float64, L::Float64)    
