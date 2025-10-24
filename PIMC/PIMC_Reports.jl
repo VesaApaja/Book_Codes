@@ -147,10 +147,8 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
         # metadata entry is a dictionary
         commit_hash = ""         
         try
-            # not always part of git 
-            commit_hash = readchomp(`git rev-parse HEAD`)
-            #git_status = readchomp(`git status --porcelain`)
-            #dirty = !isempty(git_status) # uncommitted edits?
+            # not always part of git; redirect stderr to devnull to avoid noisy message 
+            commit_hash = readchomp(pipeline(`git rev-parse HEAD`, stderr=devnull))            
         catch
             nothing
         end
