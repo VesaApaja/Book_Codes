@@ -12,7 +12,7 @@ export store_X!, restore_X!, storage
 export rho_0, active_beads_on_slice, bisection_segment!
 export generate_path!
 export backup_state!, restore_state!
-export boson_virial_exchange_energy, E_pot, E_pot_bead
+export boson_virial_exchange_energy, E_pot, E_pot_all, E_pot_bead
 export save_paths
 export argparse
 
@@ -168,6 +168,18 @@ end
         links.next[idlist[i]] = idlist[i+1]
         links.prev[idlist[i+1]] = idlist[i]
     end
+end
+
+# Compile-time dispatch
+@inline function get_ms(::PrimitiveAction, M::Int64)
+    return 1:M
+end
+@inline function get_ms(::ChinAction, M::Int64)
+    return 2:3:M
+end
+@inline function get_ms(M::Int64)
+    A = PIMC_Common.action
+    return get_ms(A(), M)
 end
 
 
