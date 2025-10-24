@@ -14,9 +14,8 @@ using PIMC_Structs
 using QMC_Statistics
 using PIMC_Systems
 using PIMC_Common
-using PIMC_Measurements: boson_virial_exchange_energy
 using PIMC_Reports: report_energy
-using PIMC_Utilities: active_beads_on_slice
+using PIMC_Utilities: active_beads_on_slice, boson_virial_exchange_energy
 
 export U, K, U_stored, U_update, update_stored_slice_data
 export meas_E_th, meas_E_vir, init_action!
