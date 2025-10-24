@@ -84,9 +84,9 @@ if case==264
     const τ = 0.01
     const action = ChinAction #PrimitiveAction 
     worm_limit = 30.0
-    const Ntherm = 1000
+    const Ntherm = 10000
     worm_C = 0.1
-    optimize_worm_params = false  
+    optimize_worm_params = true  
 end
 
 
