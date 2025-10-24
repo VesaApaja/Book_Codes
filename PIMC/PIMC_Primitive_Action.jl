@@ -9,12 +9,11 @@ using PIMC_Common
 using PIMC_Structs
 using QMC_Statistics
 using PIMC_Systems
-using PIMC_Utilities: active_beads_on_slice
+using PIMC_Utilities: active_beads_on_slice, boson_virial_exchange_energy, E_pot_bead, E_pot_all
 
 export U, K, U_stored, U_update, update_stored_slice_data
 export meas_E_th, meas_E_vir, Ekin_th, init_action!
 
-using PIMC_Measurements: boson_virial_exchange_energy, E_pot_bead, E_pot_all
 using PIMC_Reports: report_energy
 
 
