@@ -18,40 +18,12 @@ using PIMC_Moves
 using PIMC_Measurements
 using PIMC_Reports
 
-using PIMC_Primitive_Action: meas_E_th as meas_E_th_prim, meas_E_vir as meas_E_vir_prim
-using PIMC_Primitive_Action: init_action! as init_primitive_action!
+using PIMC_Action_Interface: init_action!, init_stored, meas_E_th, meas_E_vir 
 
 
 
-using PIMC_Chin_Action: meas_E_th as meas_E_th_chin, meas_E_vir as meas_E_vir_chin
-using PIMC_Chin_Action: init_action! as init_chin_action!
+#Random.seed!(123456) #TESTING
 
-
-
-Random.seed!(123456) #TESTING
-
-# compile-time dispatch:
-# ======================
-function meas_E_th(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_th_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-end
-function meas_E_th(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_th_chin(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-end
-function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    A = PIMC_Common.action  
-    return meas_E_th(A(), PIMC, beads, links, meas)
-end
-function meas_E_vir(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_vir_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-end
-function meas_E_vir(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_vir_chin(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-end
-function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    A = PIMC_Common.action  
-    return meas_E_vir(A(), PIMC, beads, links, meas)
-end
 # ==================================
 
 function init_Mβ!(β::Float64)
@@ -139,7 +111,7 @@ function init_He_liquid(;β::Float64=1.0, M::Int64)
 
     
     # read measured density from file
-    dat = readdlm("He_liquid_measured_density.dat", comments=true, comment_char='#')
+    dat = readdlm("He_liquid/He_liquid_measured_density.dat", comments=true, comment_char='#')
     Ts = dat[:, 1]  
     ρs = dat[:, 2]
     # linear interpolation to find ρ(T)
@@ -201,6 +173,11 @@ function main()
     # Read command line arguments 
     possible_args=["T"]
     arg_dict = argparse(possible_args)
+    if arg_dict==nothing
+        println("  usage: julia PIMC_main.jl T=temperature")
+        println("example:  julia PIMC_main.jl T=3.0")
+        error("missing command line argument")
+    end
     # use command line values 
     T = get(arg_dict, "T", 0.0)
     if isapprox(T, 0.0)
@@ -245,13 +222,9 @@ function main()
     mkpath(dir)
     PIMC.filesuffix = filesuffix 
     PIMC.restart_file = dir*"restart"*filesuffix*".jld2"
-    
 
-    if PIMC_Common.action == PrimitiveAction
-        init_primitive_action!(PIMC, beads)
-    elseif PIMC_Common.action == ChinAction
-        init_chin_action!(PIMC, beads)
-    end
+    # initialize action
+    init_action!(PIMC, beads)
     
     
     #
@@ -280,13 +253,14 @@ function main()
     
     if restart
         println("Restarting from file $(PIMC.restart_file)")
-        #try
-        read_restart!(PIMC, beads, links)
-        #catch
-        #    println("Restart failed, malformed restart file or error in read_restart!()")              # 
-        #    println("*** FRESH START ***")
-        #    PIMC_Common.restart = false
-        #end
+        try
+            read_restart!(PIMC, beads, links)
+        catch
+            println("Restart failed, malformed restart file or error in read_restart!()")              # 
+            println("*** FRESH START ***")
+            PIMC_Common.restart = false
+            PIMC_Common.restart_with_data = false
+        end
     end
    
     # Moves:
