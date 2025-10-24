@@ -18,8 +18,7 @@ using PIMC_Moves
 using PIMC_Measurements
 using PIMC_Reports
 
-using PIMC_Action_Interface: init_action!, init_stored, meas_E_th, meas_E_vir 
-
+using PIMC_Action_Interface
 
 
 #Random.seed!(123456) #TESTING
