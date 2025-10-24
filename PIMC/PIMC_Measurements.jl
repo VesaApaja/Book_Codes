@@ -12,7 +12,7 @@ using PIMC_Utilities
 using PIMC_Structs: t_pimc, t_beads, t_links, t_measurement
 using QMC_Statistics
 using PIMC_Systems
-using PIMC_Moves # U_stored, U_update, and generate_path used by obdm
+using PIMC_Action_Interface
 
 export add_measurement!
 export rho_s
@@ -87,7 +87,7 @@ function meas_density_profile(PIMC::t_pimc, beads::t_beads, dummy::t_links, meas
             end
         end
         
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         xs = [x for x in dens_grid]
         results[string(meas.name)] = Dict(
             "x" => xs, 
@@ -138,7 +138,7 @@ function meas_head_tail_histogram(PIMC::t_pimc, beads::t_beads, dummy::t_links, 
             end
         end
         is = [i for i in 1:datasize]
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "i" => is,
             "histo" => ave,
@@ -156,7 +156,8 @@ const obdm_buffer = Vector{Float64}(undef, 1000) # fixed size buffer
 function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement,
                    obdm_buffer::Vector{Float64}=obdm_buffer)
     """One-body density matrix: histogram of same-time Head-Tail distances"""
-    # calls U_stored, U_update, and generate_path directly from PIMC_Moves
+    #  calls directly PIMC_Action_Interface.U_stored and PIMC_Action_Interface.U_stored to avoid dependency loop
+    
     if PIMC.head == -1
         return # no worm
     end
@@ -216,7 +217,7 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
     
         Uold = 0.0    
         for id in idlist[2:end]
-            Uold += PIMC_Moves.U_stored(PIMC, beads, id) # picks slice index based on bead id
+            Uold += PIMC_Action_Interface.U_stored(PIMC, beads, id) # picks slice index based on bead id
         end
         # possibly unnecessary, but activate new beads to be sure 
         
@@ -232,7 +233,7 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
                     periodic!(rfakeH, L) 
                 end            
                 # sample free-particle path head -> fake head
-                PIMC_Moves.generate_path!(PIMC, beads, links, idlist)            
+                generate_path!(PIMC, beads, links, idlist)            
                 Unew = 0.0
                 buf = zeros(dim)
                 for id in idlist[new_bead_indices]
@@ -240,20 +241,11 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
                     if !beads.active[id]
                         println("not active!")
                     end
-                    Unew += PIMC_Moves.U_update(PIMC, beads, view(buf, :), id, :add; fake=true) # dummy old position
+                    Unew += PIMC_Action_Interface.U_update(PIMC, beads, view(buf, :), id, :add; fake=true) # dummy old position
                 end                
                 # new U when particle moves from rT -> rfakeH := beads.X[:, PIMC.tail]
-                Unew += PIMC_Moves.U_update(PIMC, beads, rT, PIMC.tail, :move, fake=true)
-                #Unew_ = 0.0
-                #for id in idlist[new_bead_indices]
-                #    Unew_ +=  PIMC_Moves.U_chin(PIMC, beads, id)
-                #end                
-                #Unew_ +=  PIMC_Moves.U_chin(PIMC, beads, PIMC.tail)
-                #if !isapprox(Unew, Unew_)
-                #    @show Unew, Unew_
-                #    exit()
-                #end
-
+                Unew += PIMC_Action_Interface.U_update(PIMC, beads, rT, PIMC.tail, :move, fake=true)
+                
                 
                 ΔU = Unew - Uold
                 ΔU = clamp(ΔU, -100.0, 100.0) # avoid overflow
@@ -282,19 +274,7 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
     
     add_sample!(meas.stat, obdm)
 
-    #=
-    open("obdm.tmp","a") do f
-        for bin in 1:datasize
-            r = (bin-1)*stepr   
-            println(f, "$r, $(obdm[bin])")
-        end
-        println(f)
-        println(f)
-        println(f)                
-    end
-    =#
-     
-    
+       
     if meas.stat.finished
         # block full, report
         ave, std, input_σ2, Nblocks  = get_stats(meas.stat)
@@ -316,7 +296,7 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
             end
         end
         
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "r" => rs,
             "obdm" => ave,
@@ -386,7 +366,7 @@ function meas_radial_distribution(PIMC::t_pimc, beads::t_beads, dummy::t_links, 
                 end
             end
         end
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "r" => rs,
             "g" => gs,
@@ -551,7 +531,7 @@ function meas_static_structure_factor(PIMC::t_pimc, beads::t_beads, links::t_lin
                 end
             end
         end
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "Sk" => ave,
             "k" => ks,
@@ -607,7 +587,7 @@ function meas_superfluid_fraction(PIMC::t_pimc, beads::t_beads, links::t_links, 
                 @printf(f,"%8.3f  %8.5f  %-8.5f  %8.5f \n", 1/β, ave, std, bdata) 
             end
         end
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "rhos" => ave,
             "std" => std
@@ -669,7 +649,7 @@ function meas_cycle_count(PIMC::t_pimc, beads::t_beads, links::t_links, meas::Un
                 cc[i]>0 && @printf("%d %8.5f \n", i, cc[i])
             end
         end
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "cc" => cc,
         )
@@ -742,7 +722,7 @@ function E_pot_bead(PIMC::t_pimc, beads::t_beads, id::Int64)
                 end
             end
         end
-        # set HDF4 data Dict
+        # set HDF5 data Dict
         results[string(meas.name)] = Dict(
             "r" => rs,
             "g" => gs,
