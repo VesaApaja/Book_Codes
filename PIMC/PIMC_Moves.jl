@@ -480,8 +480,7 @@ function worm_move!(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::
                 PIMC_Common.worm_K += 1
             end
             clamp(PIMC_Common.worm_K, ceil(Int64, 0.1 * PIMC.M), ceil(Int64, 0.3 * PIMC.M))
-            PIMC_Common.worm_K = max(PIMC_Common.worm_K, 2)
-            @printf("open_acceptance  = %-8.2f  worm_K = %-15d\n", open_acceptance, worm_K)
+            @printf("open_acceptance  = %-8.2f  worm_K = %-15d\n", open_acceptance, PIMC_Common.worm_K)
         end    
     end
 
