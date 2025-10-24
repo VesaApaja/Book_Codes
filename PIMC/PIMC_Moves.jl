@@ -16,52 +16,21 @@ using PIMC_Structs
 using PIMC_Utilities
 using QMC_Statistics
 
-using PIMC_Primitive_Action: U as U_prim, K as K_prim, U_update as U_update_prim, U_stored as U_stored_prim
-using PIMC_Primitive_Action:update_stored_slice_data as update_stored_slice_data_prim
-using PIMC_Primitive_Action: init_stored as init_stored_prim
-
-using PIMC_Chin_Action: update_stored_slice_data as update_stored_slice_data_chin, U as U_chin, K as K_chin
-using PIMC_Chin_Action: U_update as U_update_chin, U_stored as U_stored_chin
-using PIMC_Chin_Action: init_stored as init_stored_chin
-using PIMC_Chin_Action: opt_chin_a1_chin_t0
-
+using PIMC_Action_Interface
 using PIMC_Systems
 using PIMC_Measurements: meas_superfluid_fraction, meas_cycle_count
 
 export add_move!  
 export bead_move!, rigid_move!, bisection_move!, worm_move!
-export init_stored
 
 
-using PIMC_Chin_Action: meas_E_vir #TEST
     
-# compile-time dispatch:
-# ======================
-
-@inline function init_stored(::PrimitiveAction, PIMC::t_pimc, beads::t_beads)
-    return init_stored_prim(PIMC, beads)
-end
-@inline function init_stored(::ChinAction, PIMC::t_pimc, beads::t_beads)
-    return init_stored_chin(PIMC, beads)
-end
-@inline function init_stored(PIMC::t_pimc, beads::t_beads)
-    """user interface"""
-    A = PIMC_Common.action
-    return init_stored(A(), PIMC, beads)
-end
-
 # -------------------
 # Light-weight buffers, *not* thread-safe
 const vec_buffer  = MVector{dim, Float64}(undef)
 const vec_buffer2 = MVector{dim, Float64}(undef)
 const vec_buffer3 = MVector{dim, Float64}(undef)
 
-# just for generate_path:
-const vec_gene1 = MVector{dim, Float64}(undef)
-const vec_gene2 = MVector{dim, Float64}(undef)
-const vec_gene3 = MVector{dim, Float64}(undef)
-const vec_gene4 = MVector{dim, Float64}(undef)
-const vec_gene5 = MVector{dim, Float64}(undef)
 
 const idlist_buffer = Vector{Int64}(undef, 1000) # should be enough
 
@@ -90,147 +59,6 @@ end
 end
 
 
-# compile-time dynamical dispatch:
-# ================================
-
-@inline function U(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, id::Int64)
-    return U_prim(PIMC, beads, id)
-end
-@inline function U(::ChinAction, PIMC::t_pimc, beads::t_beads, id::Int64)
-    return U_chin(PIMC, beads)
-end
-@inline function U(PIMC::t_pimc, beads::t_beads)
-    """user interface"""
-    A = PIMC_Common.action
-    return U(A(), PIMC, beads)
-end
-
-@inline function U_stored(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, id::Int64)    
-    return U_stored_prim(PIMC, beads, id)
-end
-@inline function U_stored(::ChinAction, PIMC::t_pimc, beads::t_beads, id::Int64)
-    return U_stored_chin(PIMC, beads, id)
-end
-@inline function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64)
-    """user interface"""
-    A = PIMC_Common.action
-    return U_stored(A(), PIMC, beads, id)
-end
-
-@inline function U_update(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool)    
-    return U_update_prim(PIMC, beads, Xold, id ,act; fake=fake)
-end
-@inline function U_update(::ChinAction, PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool)   
-    return U_update_chin(PIMC, beads, Xold, id, act; fake=fake)
-end
-@inline function U_update(PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool=false)
-    """user interface"""
-    A = PIMC_Common.action
-    return U_update(A(), PIMC, beads, Xold, id, act; fake)
-end
-
-@inline function K(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64)
-    return K_prim(PIMC, beads, links, id)
-end
-@inline function K(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64)
-    return K_chin(PIMC, beads, links, id)
-end
-@inline function K(PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64)
-    """user interface"""
-    A = PIMC_Common.action
-    return K(A(), PIMC, beads, links, id)
-end
-
-@inline function update_stored_slice_data(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, id::Int64)
-    return update_stored_slice_data_prim(PIMC, beads, id)
-end
-@inline function update_stored_slice_data(::ChinAction, PIMC::t_pimc, beads::t_beads, id::Int64)
-    return update_stored_slice_data_chin(PIMC, beads, id)
-end
-@inline function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64)
-    """user interface"""
-    A = PIMC_Common.action
-    return update_stored_slice_data(A(), PIMC, beads, id)
-end
-# ==================================
-
-function generate_path!(PIMC::t_pimc, beads::t_beads, links::t_links, idlist::AbstractVector{Int64})
-    """Generates a free-particle path between known beads idlist[1] and idlist[end] using staging; updates links."""
-    #
-    # Generated beads are not activated! 
-    #
-    M = PIMC.M
-    τ = PIMC.τ
-    β = PIMC.β
-    L = PIMC.L
-    #
-    start_bead = idlist[1]
-    end_bead   = idlist[end]
-    t_start = beads.ts[start_bead]
-    t_end   = beads.ts[end_bead]
-
-    K = length(idlist)
-    
-    if K==2
-        #      1        K=2
-        # start_bead  end_bead
-        # No path to generate, just close the link
-        links.next[start_bead] = end_bead
-        links.prev[end_bead]   = start_bead
-        return nothing
-    end
-
-    #      1      2 3 ...    K-1    K
-    # start_bead   new beads      end_bead
-    # Generate new beads using staging
-
-    r_left = vec_gene5
-    @inbounds @views r_left .= beads.X[:, start_bead] # r_left changes in iteration, beads.X[:, start_bead] is not changed
-    r_end = @view beads.X[:, end_bead]   # fixed
-    t_end = beads.times[end_bead]        # fixed
-
-    r_m = vec_gene1
-    r_m_star = vec_gene2
-    r_right = vec_gene3    
-    dr = vec_gene4
-    
-    id_left = start_bead
-    @inbounds begin
-        for m in 2:K-1        
-            id = idlist[m] 
-            #        
-            τ_left = mod(beads.times[id] -  beads.times[id_left], β)
-            τ_right = mod(t_end -  beads.times[id], β)
-            τ = 1/(1/τ_left + 1/τ_right) 
-            σ = sqrt(2λ*τ)
-            #
-            distance!(r_end, view(r_left, :), L, dr) # dr = r_end - r_left periodically
-            
-            for d in 1:dim
-                r_right[d] = r_left[d] + dr[d]
-                r_m_star[d] = (τ_right*r_left[d] + τ_left*r_right[d])/(τ_left + τ_right)         
-                # new bead position        
-                r_m[d] = r_m_star[d] +  σ * randn()
-                if pbc 
-                    r_m[d] = mod(r_m[d] + L/2, L) - L/2
-                end            
-                beads.X[d, id] = r_m[d]
-            end
-            # link previous bead to new bead
-            links.next[id_left] = id
-            links.prev[id] = id_left
-            # assign r_m as the known bead r_left; careful not to set them same forever!
-            id_left = id
-            @views r_left .= r_m        
-        end
-    end
-    
-    # link last generated bead to end_bead
-    id = idlist[K-1]
-    links.next[id] = end_bead
-    links.prev[end_bead] = id
-    return nothing
-end
 
 # =======
 # Moves 
