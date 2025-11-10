@@ -20,7 +20,7 @@ using PIMC_Reports
 
 using PIMC_Action_Interface
 
-
+#PIMC_Common.TEST=true
 #Random.seed!(123456) #TESTING
 
 # ==================================
@@ -43,6 +43,11 @@ function init_Mβ!(β::Float64)
     if d>1e-6
         println("Note: using nearest temperature T=$(1/β) with M=$M that gives τ = $(PIMC_Common.τ)")
     end
+    if M>M_max
+        println("M = $M, but code assumes M_max=$M_max")
+        error("M > M_max") 
+    end
+    
     return M, β
 end
 
@@ -118,13 +123,16 @@ function init_He_liquid(;β::Float64=1.0, M::Int64)
     ind = findfirst(x -> x >= T, Ts)
     if ind==nothing
         # probably past end
-        error("Density is outside known T regime")
-        
+        error("Density is outside known T regime")        
     else
         #  ρ in units 1/Å^3
         ρ  = ((Ts[ind]-T)*ρs[ind-1] + (T-Ts[ind-1])*ρs[ind])/(Ts[ind]-Ts[ind-1])
     end
 
+    # MODIFY ρ
+    #PIMC_Common.TEST = true
+    #ρ += 0.002
+    #ρ = 0.025
     
     # solve L from ρ = N/L^dim
 
@@ -226,30 +234,6 @@ function main()
     init_action!(PIMC, beads)
     
     
-    #
-    # Measurements:
-    # =============
-    base_freq = 10
-    add_measurement!(PIMC, base_freq, :E_th, meas_E_th, 3, 10*base_freq, dir*"E_th"*filesuffix)
-    add_measurement!(PIMC, base_freq, :E_vir, meas_E_vir, 3, 10*base_freq, dir*"E_vir"*filesuffix)
-
-    # worm details
-    add_measurement!(PIMC, 10*base_freq, :head_tail_histogram, meas_head_tail_histogram, PIMC.M, 100*base_freq, dir*"head_tail_histogram"*filesuffix)
-    
-    if bose && N>1
-        add_measurement!(PIMC, base_freq, :cycle_count, meas_cycle_count, N, 10*base_freq, dir*"cycle_count"*filesuffix)
-        add_measurement!(PIMC, base_freq, :superfluid_fraction, meas_superfluid_fraction, 1, 10*base_freq, dir*"rhos"*filesuffix)
-        add_measurement!(PIMC, base_freq, :obdm, meas_obdm, 31, 10*base_freq, dir*"obdm"*filesuffix)
-    end
-    if PIMC_Common.sys == :HarmonicOscillator        
-        add_measurement!(PIMC, 10*base_freq, :density_profile, meas_density_profile, 301, 100*base_freq, dir*"density_profile"*filesuffix)
-    end
-    if PIMC_Common.sys in (:HeLiquid, :Noninteracting)
-        add_measurement!(PIMC, base_freq, :radial_distribution, meas_radial_distribution, 101, 10*base_freq, dir*"g"*filesuffix)
-        add_measurement!(PIMC, base_freq, :static_structure_factor, meas_static_structure_factor, 101, 10*base_freq, dir*"S"*filesuffix)
-    end
-
-    
     if restart
         println("Restarting from file $(PIMC.restart_file)")
         try
@@ -262,6 +246,10 @@ function main()
         end
     end
    
+    #
+    
+
+    
     # Moves:
     # ======
     add_move!(PIMC, 10, :bead_move, bead_move!)
@@ -271,7 +259,7 @@ function main()
 
     # Reports
     # =======
-    add_report!(PIMC, 1000, :PIMC_report, pimc_report)
+    add_report!(PIMC, 5000, :PIMC_report, pimc_report)
     add_report!(PIMC, 1000, :acceptance, report_acceptance)   
     PIMC.hdf5_file =  dir*"results"*filesuffix*".h5"
     println("HDF5 output to file  $(PIMC.hdf5_file)")
@@ -281,18 +269,10 @@ function main()
     # report parameters
     pimc_report(PIMC)
     
-    # Delete old raw data files (the hdf5 file will always be overwritten)
-    # comment out if you want to keep collecting data after a restart (and get separate error estimates)
-    for meas in PIMC.measurements          
-        rm(meas.filename, force = true)
-    end
-    if PIMC_Common.opt_chin
-        file = "Chin_opt"*PIMC.filesuffix
-        rm(file, force=true)
-    end
+    
 
         
-    pimc_results_to_hdf5(PIMC::t_pimc)
+    pimc_results_to_hdf5(PIMC)
 
     # initialize Action stored values (U is updated from these initial values)
     init_stored(PIMC, beads)
@@ -319,6 +299,86 @@ function main()
         write_restart(PIMC, beads, links)            
         println("="^80)
     end
+
+
+    # Thermalization
+    run_pimc(PIMC, beads, links, beads_backup, links_backup, Ntherm)
+    PIMC_Common.Ntherm = 0 # signals "thermalization done" to subsequent calls to run_pimc
+    
+    
+    # Estimate τ_int from a short run
+    # ===============================
+    # add_measurement!() : 
+    # 2nd arguments: measurement every # of steps
+    # 5th arguments: blocksize, used in estimating statistical error
+    
+    println("Estimating energy τ_int in a short simulation")
+    println("adding dummy E_vir measurement:")
+    add_measurement!(PIMC, 100000000, :E_vir, meas_E_vir, 3, 10000000, dir*"E_vir"*filesuffix)
+    meas = filter(m -> m.name === :E_vir, PIMC.measurements)[1] # dummy
+    Es = Vector{Float64}()
+    Ps = Vector{Float64}()
+    nsteps = 200
+    println("PIMC steps (up to $nsteps): ")
+  
+    for i in 1:nsteps
+        print("$i ")
+        run_pimc(PIMC, beads, links, beads_backup, links_backup, 1)
+        E = meas_E_vir(PIMC, beads, links, meas, opt=true) # meas is dummy
+        P = meas_virial_pressure(PIMC, beads, links, meas, opt=true) # meas is dummy
+        push!(Es, E)
+        push!(Ps, P)
+    end
+    P = sum(Ps)/length(Ps)
+    println()
+    @printf("%10.5f %20.8f %20.8f T density pressure\n", 1/PIMC.β, N/(PIMC.L^dim), P)
+    println()
+    τ_int = integrated_autocorr(Es)
+    println("PIMC_Chin_Action E_vir: τ_int =  $τ_int")
+    # remove dummy E_vir measurement
+    PIMC.measurements = filter(m -> m.name != :E_vir, PIMC.measurements)
+            
+    println("="^80)
+    #exit()
+    
+    # Measurements:
+    # =============
+    
+    bf = max(1, round(Int, τ_int))   # also 2*τ_int is fine
+    println("Base frequency of measurements $bf")
+    # add_measurement! : 
+    # 2nd arguments: measurement every # of steps
+    # 5th arguments: blocksize, used in estimating statistical error
+    add_measurement!(PIMC, bf, :E_th, meas_E_th, 3, 5*bf, dir*"E_th"*filesuffix)
+    add_measurement!(PIMC, bf, :E_vir, meas_E_vir, 3, 5*bf, dir*"E_vir"*filesuffix)
+    # worm details
+    add_measurement!(PIMC, 10*bf, :head_tail_histogram, meas_head_tail_histogram, PIMC.M, 50*bf, dir*"head_tail_histogram"*filesuffix)
+    
+    if bose && N>1
+        add_measurement!(PIMC, bf, :cycle_count, meas_cycle_count, N, 5*bf, dir*"cycle_count"*filesuffix)
+        add_measurement!(PIMC, bf, :superfluid_fraction, meas_superfluid_fraction, 1, 5*bf, dir*"rhos"*filesuffix)
+        add_measurement!(PIMC, bf, :obdm, meas_obdm, 31, 5*bf, dir*"obdm"*filesuffix)
+    end
+    if PIMC_Common.sys == :HarmonicOscillator        
+        add_measurement!(PIMC, 10*bf, :density_profile, meas_density_profile, 301, 50*bf, dir*"density_profile"*filesuffix)
+    end
+    if PIMC_Common.sys in (:HeLiquid, :Noninteracting)
+        add_measurement!(PIMC, bf, :radial_distribution, meas_radial_distribution, 101, 5*bf, dir*"g"*filesuffix)
+        # NB: virial pressure and static structure factor (in present form) are computationally expensive 
+        #add_measurement!(PIMC, bf, :virial_pressure, meas_virial_pressure, 1, 5*bf, dir*"Pressure"*filesuffix)
+        #add_measurement!(PIMC, bf, :static_structure_factor, meas_static_structure_factor, 101, 2*bf, dir*"S"*filesuffix)
+    end
+    
+    # Delete old raw data files (the hdf5 file will always be overwritten)
+    # comment out if you want to keep collecting data after a restart (and get separate error estimates)
+    for meas in PIMC.measurements          
+        rm(meas.filename, force = true)
+    end
+    if PIMC_Common.opt_chin
+        file = "Chin_opt"*PIMC.filesuffix
+        rm(file, force=true)
+    end
+    
     
     # PIMC START
     @time run_pimc(PIMC, beads, links, beads_backup, links_backup)
