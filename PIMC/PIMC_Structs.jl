@@ -7,8 +7,8 @@ using LinearAlgebra: BLAS, ⋅
 BLAS.set_num_threads(1) 
 using JLD2 # binary restart files
 using BenchmarkTools
+using InteractiveUtils
 
-    
 # local modules:
 push!(LOAD_PATH,".")
 using QMC_Statistics: t_Stat, get_stats
@@ -19,6 +19,7 @@ using PIMC_Common
 export t_pimc, t_links, t_beads, t_move, t_measurement
 export init_pimc, run_pimc, check_links
 export write_restart, read_restart!
+export has_potential
 
 @inline norm(x) = sqrt(sum(abs2,x))
 
@@ -68,29 +69,43 @@ struct t_report
     end
 end
 
+
+
+# For non-existing confinement or pair potential cases
+struct NoPotential end
+(::NoPotential)(x...) = 0.0
+(::NoPotential)(x::AbstractVector) = zeros(eltype(x), length(x))
+(::NoPotential)(x::Real) = 0.0
+
+# traits; multiple dispatch chooses based on argument type, most specialized match wins
+has_potential(::NoPotential) = false   
+has_potential(::Any) = true    
+
 # parametric type
-mutable struct t_pimc{A<:PIMC_Common.action}   
+mutable struct t_pimc{A<:PIMC_Common.action,
+                      Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2}
     canonical::Bool                  # Canonical or not, not means grand canonical
-    M::Int64                           # number of time slices    
+    M::Int64                         # number of time slices    
     β::Float64                       # inverse temperature
     τ::Float64                       # imaginary time step
     L::Float64                       # box size in PBC
     μ::Float64                       # chemical potential, μ=0 in canonical
-    # Chin action parameters:
-    chin_a1::Float64
-    chin_t0::Float64
-    # potentials 
-    pair_potential::Union{Function, Nothing}        # pair potential V(r_ij)
-    confinement_potential::Union{Function, Nothing} # confinement V_ext(vecr)
-    der_pair_potential::Union{Function, Nothing}  # V´(r_ij)
-    der2_pair_potential::Union{Function, Nothing} # V´´(r_ij)
-    grad_confinement_potential::Union{Function, Nothing} # ∇_i V_ext(vecr)
-    grad2_confinement_potential::Union{Function, Nothing} # ∇_i^2 V_ext(vecr)
     ipimc::Int64                     # PIMC step counter
     iworm::Int64                     # worm step counter
     head::Int64                      # worm head bead id
     tail::Int64                      #   ...     tail id
     swapcount::Int64
+    # Chin action parameters:
+    chin_a1::Float64
+    chin_t0::Float64
+    # potentials 
+    pair_potential::Fpair
+    confinement_potential::Fconf
+    der_pair_potential::Fder
+    der2_pair_potential::Fder2
+    grad_confinement_potential::Fgrad
+    grad2_confinement_potential::Fgrad2
+        
     restart_file::String
     hdf5_file::String
     filesuffix::String
@@ -102,55 +117,37 @@ mutable struct t_pimc{A<:PIMC_Common.action}
     reports::Vector{t_report}
 end
 
-function t_pimc{A}(; canonical=true,
-                   M=10,
-                   β=1.0,
-                   τ=0.1, L=1.0, μ=0.0,
-                   chin_a1 = 0.33,
-                   chin_t0 = 0.1215,
-                   ipimc=0, iworm=0, head=-1, tail=-1, swapcount=0,
-                   restart_file = "",
-                   hdf5_file = "",
-                   filesuffix = "",
-                   pair_potential=nothing,
-                   confinement_potential=nothing,
-                   der_pair_potential=nothing,
-                   der2_pair_potential=nothing,
-                   grad_confinement_potential=nothing,
-                   grad2_confinement_potential=nothing,
-                   acceptance=Dict(),
-                   measurements=[],
-                   moves=[],
-                   reports=[]) where A<:PIMC_Common.AbstractAction
-    return t_pimc{A}(canonical,
-                     M, β, τ, L, μ, chin_a1, chin_t0,
-                     pair_potential, confinement_potential,
-                     der_pair_potential, der2_pair_potential,
-                     grad_confinement_potential,
-                     grad2_confinement_potential, 
-                     ipimc, iworm, head, tail, swapcount, restart_file, hdf5_file, filesuffix,
-                     acceptance,
-                     measurements, moves, reports
-                     )
-end
-
-
 function init_pimc(; M::Int64,
-                   canonical::Bool, β::Float64,  L::Float64,                   
-                   pair_potential::Union{Function, Nothing}=nothing,
-                   confinement_potential::Union{Function, Nothing}=nothing,
-                   der_pair_potential::Union{Function, Nothing}=nothing,
-                   der2_pair_potential::Union{Function, Nothing}=nothing,
-                   grad_confinement_potential::Union{Function, Nothing}=nothing,
-                   grad2_confinement_potential::Union{Function, Nothing}=nothing                   
+                   canonical::Bool, β::Float64,  L::Float64,
+                   pair_potential::Union{Function, Nothing} = nothing,
+                   confinement_potential::Union{Function, Nothing} = nothing,
+                   der_pair_potential::Union{Function, Nothing} = nothing,
+                   der2_pair_potential::Union{Function, Nothing} = nothing,
+                   grad_confinement_potential::Union{Function, Nothing} = nothing,
+                   grad2_confinement_potential::Union{Function, Nothing} = nothing
                    ) 
-            
-    
+    pair_potential              = pair_potential            === nothing ? NoPotential() : pair_potential
+    confinement_potential       = confinement_potential     === nothing ? NoPotential() : confinement_potential
+    der_pair_potential          = der_pair_potential        === nothing ? NoPotential() : der_pair_potential
+    der2_pair_potential         = der2_pair_potential       === nothing ? NoPotential() : der2_pair_potential
+    grad_confinement_potential  = grad_confinement_potential === nothing ? NoPotential() : grad_confinement_potential
+    grad2_confinement_potential = grad2_confinement_potential === nothing ? NoPotential() : grad2_confinement_potential
 
+        
+    # the actual types of potentials
+    Fpair  = typeof(pair_potential)
+    Fconf  = typeof(confinement_potential)
+    Fder   = typeof(der_pair_potential)
+    Fder2  = typeof(der2_pair_potential)
+    Fgrad  = typeof(grad_confinement_potential)
+    Fgrad2 = typeof(grad2_confinement_potential)
+
+    # simulations box
     if pbc && isapprox(L,0.0)
         error("Need L>0 for PBC")
     end
-    if pbc && confinement_potential != nothing
+    @show confinement_potential
+    if pbc && confinement_potential != NoPotential()
         error("Can't use both PBC and confinement potential")
     end
     
@@ -242,19 +239,40 @@ function init_pimc(; M::Int64,
         end
      
     end
+    ipimc = 0
+    iworm = 0
+    head = -1
+    tail = -1
+    swapcount = 0
+    μ = 0.0
+    chin_a1 = 0.33 
+    chin_t0 = 0.1215   
+    restart_file = ""
+    hdf5_file = ""
+    filesuffix = "" 
+    acceptance = Dict{t_move, Float64}()
+    measurements = t_measurement[]
+    moves = t_move[]
+    reports = t_report[]
 
-        
-    PIMC = t_pimc{PIMC_Common.action}(M=M, β=β, τ=τ, L=L, ipimc=0, iworm=0, head=-1, tail=-1,swapcount=0,
-                                      pair_potential=pair_potential,
-                                      confinement_potential=confinement_potential,
-                                      der_pair_potential=der_pair_potential,
-                                      der2_pair_potential=der2_pair_potential,
-                                      grad_confinement_potential=grad_confinement_potential,
-                                      grad2_confinement_potential=grad2_confinement_potential                                    
-                                      )
-
-    
-    
+    # can use only positional arguments here
+    PIMC = t_pimc{PIMC_Common.action, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2}(
+        canonical, M, β, τ, L, μ, ipimc, iworm, head, tail, swapcount,
+        chin_a1, chin_t0,
+        pair_potential,
+        confinement_potential,
+        der_pair_potential,
+        der2_pair_potential,
+        grad_confinement_potential,
+        grad2_confinement_potential,
+        restart_file,
+        hdf5_file,
+        filesuffix,
+        acceptance,
+        measurements,
+        moves,
+        reports
+    )
     check_links(PIMC, beads, links)
    
     
