@@ -7,21 +7,22 @@ using PIMC_Structs
 
 using PIMC_Primitive_Action: init_action! as init_action_prim!
 using PIMC_Primitive_Action: U as U_prim, K as K_prim, U_update as U_update_prim, U_stored as U_stored_prim
-using PIMC_Primitive_Action:update_stored_slice_data as update_stored_slice_data_prim
+using PIMC_Primitive_Action: update_stored_slice_data as update_stored_slice_data_prim
 using PIMC_Primitive_Action: init_stored as init_stored_prim
 using PIMC_Primitive_Action: meas_E_th as meas_E_th_prim,  meas_E_vir as meas_E_vir_prim 
-
+using PIMC_Primitive_Action: meas_virial_pressure as meas_virial_pressure_prim
+    
 using PIMC_Chin_Action: init_action! as init_action_chin!
 using PIMC_Chin_Action: update_stored_slice_data as update_stored_slice_data_chin, U as U_chin, K as K_chin
 using PIMC_Chin_Action: U_update as U_update_chin, U_stored as U_stored_chin
 using PIMC_Chin_Action: init_stored as init_stored_chin
 using PIMC_Chin_Action: opt_chin_a1_chin_t0
 using PIMC_Chin_Action: meas_E_th as meas_E_th_chin, meas_E_vir as meas_E_vir_chin 
-
+using PIMC_Chin_Action: meas_virial_pressure as meas_virial_pressure_chin
 
 export init_action!, init_stored, update_stored_slice_data
 export U, K, U_stored, U_update
-export meas_E_th, meas_E_vir
+export meas_E_th, meas_E_vir, meas_virial_pressure
 
 # compile-time dispatch:
 # ======================
@@ -61,15 +62,26 @@ function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
     A = PIMC_Common.action  
     return meas_E_th(A(), PIMC, beads, links, meas)
 end
-function meas_E_vir(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_vir_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
+function meas_E_vir(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+    return meas_E_vir_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt=opt)
 end
-function meas_E_vir(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
-    return meas_E_vir_chin(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
+function meas_E_vir(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+    return meas_E_vir_chin(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt=opt)
 end
-function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
+function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
     A = PIMC_Common.action  
-    return meas_E_vir(A(), PIMC, beads, links, meas)
+    return meas_E_vir(A(), PIMC, beads, links, meas; opt=opt)
+end
+
+function meas_virial_pressure(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+    return meas_virial_pressure_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt=opt)
+end
+function meas_virial_pressure(::ChinAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+    return meas_virial_pressure_chin(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt=opt)
+end
+function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+    A = PIMC_Common.action  
+    return meas_virial_pressure(A(), PIMC, beads, links, meas; opt=opt)
 end
 
 
@@ -97,16 +109,24 @@ end
     return U_stored(A(), PIMC, beads, id)
 end
 
-@inline function U_update(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool)    
-    return U_update_prim(PIMC, beads, Xold, id ,act; fake=fake)
+
+@inline function U_update(::PrimitiveAction, PIMC::t_pimc, beads::t_beads,
+                         Xold::AbstractArray{Float64}, id::Int64, act::Symbol,
+                         fake::Bool)
+    return U_update_prim(PIMC, beads, Xold, id, act, fake)
 end
-@inline function U_update(::ChinAction, PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool)   
-    return U_update_chin(PIMC, beads, Xold, id, act; fake=fake)
+@inline function U_update(::ChinAction, PIMC::t_pimc, beads::t_beads,
+                         Xold::AbstractArray{Float64}, id::Int64, act::Symbol,
+                         fake::Bool)
+    return U_update_chin(PIMC, beads, Xold, id, act, fake)
 end
-@inline function U_update(PIMC::t_pimc, beads::t_beads, Xold::AbstractArray{Float64}, id::Int64, act::Symbol; fake::Bool=false)
-    """user interface"""
-    A = PIMC_Common.action
-    return U_update(A(), PIMC, beads, Xold, id, act; fake)
+
+@inline function U_update(PIMC::t_pimc, beads::t_beads,
+                         Xold::AbstractArray{Float64}, id::Int64, act::Symbol;
+                          fake::Bool=false)
+    # User interface
+    A = PIMC_Common.action()  
+    return U_update(A, PIMC, beads, Xold, id, act, fake)
 end
 
 @inline function K(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64)
