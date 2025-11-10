@@ -5,7 +5,7 @@ using LinearAlgebra
 using StaticArrays
 push!(LOAD_PATH,".")
 using PIMC_Common
-using PIMC_Structs:t_beads, t_links, t_pimc
+using PIMC_Structs:t_beads, t_links, t_pimc, has_potential
 
 export distance_check
 export store_X!, restore_X!, storage
@@ -192,10 +192,10 @@ function E_pot_all(PIMC::t_pimc, beads::t_beads)
         # all active beads on slice m
         bs = active_beads_on_slice(beads, m)
         Xv = @view beads.X[:, bs]        
-        if PIMC.confinement_potential !== nothing
+        if has_potential(PIMC.confinement_potential)
             Epot += sum(PIMC.confinement_potential(Xv))            
         end
-        if PIMC.pair_potential !== nothing
+        if has_potential(PIMC.pair_potential)
             V = PIMC.pair_potential
             L = PIMC.L
             #t1 = @elapsed begin            
@@ -239,7 +239,7 @@ function E_pot_all(PIMC::t_pimc, beads::t_beads)
             
         end          
     end
-    if PIMC.pair_potential !== nothing
+    if has_potential(PIMC.pair_potential)
         Epot += PIMC_Common.Vtail*N # add tail correction, if any
     end
     return Epot/length(ms) # works for both prim and chin
@@ -256,10 +256,10 @@ function E_pot_bead(PIMC::t_pimc, beads::t_beads, id::Int64)
     beads.active[id]==false && (return Epot)
 
     r1 = @view beads.X[:, id]
-    if PIMC.confinement_potential !== nothing        
+    if has_potential(PIMC.confinement_potential)
         Epot += PIMC.confinement_potential(r1)
     end
-    if PIMC.pair_potential !== nothing
+    if has_potential(PIMC.pair_potential)
         V = PIMC.pair_potential
         L = PIMC.L
         t = beads.ts[id]        
@@ -291,7 +291,18 @@ function E_pot_bead(PIMC::t_pimc, beads::t_beads, id::Int64)
     end
     return Epot
 end
-function boson_virial_exchange_energy(PIMC::t_pimc, beads::t_beads, links::t_links)
+
+const dx_long_buffer = MVector{dim, Float64}(undef)
+const dx_short_buffer = MVector{dim, Float64}(undef)
+const dr_buffer = MVector{dim, Float64}(undef)
+const r_buffer = MVector{dim, Float64}(undef)
+
+function boson_virial_exchange_energy(PIMC::t_pimc, beads::t_beads, links::t_links,
+                                      dr::MVector{dim, Float64} = dr_buffer,
+                                      dx_long::MVector{dim, Float64} = dx_long_buffer,
+                                      dx_short::MVector{dim, Float64} = dx_short_buffer,
+                                      r::MVector{dim, Float64} = r_buffer
+                                      ) ::Float64
     """Boson virial estimator exchange energy term for co-moving centroid reference."""
 
     if !bose
@@ -304,32 +315,29 @@ function boson_virial_exchange_energy(PIMC::t_pimc, beads::t_beads, links::t_lin
     
     # exchange energy term
     
-    dx_long = zeros(dim)  # pre-allocate 
-    dx_short = zeros(dim) 
-    r = zeros(dim)
-    
-    Δτ = 0.0 
-    Eexc = 0.0
-    dr = zeros(dim)
-    for idm in beads.ids[beads.active]
-        r_m = @view beads.X[:,idm] # X_m 
-        r .= r_m  # displacements are relative to r (updated along the way)
-        id = idm
-        for m in 1:M
-            id = links.next[id]
-            distance!(view(beads.X, :, id), view(r,:), L, dr)
-            if m==M-1
-                # X_M+m - X_M+m-1, short distance vector
-                dx_short .= dr
-                Δτ = mod(beads.times[id] - beads.times[links.prev[id]], β)        
+    Δτ::Float64 = 0.0  
+    Eexc::Float64 = 0.0
+    @inbounds begin
+        for idm in beads.ids[beads.active]
+            r_m = @view beads.X[:,idm] # X_m 
+            r .= r_m  # displacements are relative to r (updated along the way)
+            id = idm
+            for m in 1:M
+                id = links.next[id]
+                distance!(view(beads.X, :, id), r, L, dr)
+                if m==M-1
+                    # X_M+m - X_M+m-1, short distance vector
+                    dx_short .= dr
+                    Δτ = mod(beads.times[id] - beads.times[links.prev[id]], β)        
+                end
+                r .+= dr
             end
-            r .+= dr
+            r_Mm = r # X_M+m
+            # long continuous path vector (on same slice), *not* min. image distance         
+            dx_long .= r_Mm - r_m  # X_M+m - X_m
+            Eexc += dx_long ⋅ dx_short/Δτ  
         end
-        r_Mm = r # X_M+m
-        # long continuous path vector (on same slice), *not* min. image distance         
-        dx_long .= r_Mm - r_m  # X_M+m - X_m
-        Eexc += dx_long ⋅ dx_short/Δτ  
-    end
+    end # inbounds
     Eexc *= -1/(4*λ*M*β)
     Eexc
 end
