@@ -14,19 +14,19 @@ const name = "HO"
 const Ntherm = 10000
 
 
-function potential(r::AbstractArray{T}) where T<:Number
+function potential(r::AbstractArray{T}) where T<:Real
     """Harmonic oscillator confinement"""
     return 0.5*norm(r)^2 # 1/2*mω^2 r^2, units m=1 ω=1
 end
 
 
 
-function grad_potential(r::AbstractArray{T}) where T<:Number
+function grad_potential(r::AbstractArray{T}) where T<:Real
     """∇ V(vecr), gradient of Harmonic oscillator confinement"""
     return r #  mω^2 vecr, units m=1 ω=1
 end
 
-function grad2_potential(r::AbstractArray{T}) where T<:Number
+function grad2_potential(r::AbstractArray{T}) where T<:Real
     """∇^V(vecr), Laplacian of Harmonic oscillator confinement"""
     # ∇⋅r = dim 
     return size(r,1) 
@@ -268,7 +268,7 @@ function potential(r::T) where T<:Real # liberal argument type For AD
     if x < D
         fx = exp(-(D/x-1)^2)
     else
-        fx = 1
+        fx = one(T)  # 1, but type may be Dual
     end 
     V = epsil*(aa*exp(-alpha*x+beta*x^2)-fx*(c6/x^6 + c8/x^8 + c10/x^10))    
 end
@@ -282,10 +282,10 @@ function der_potential(r::T) where T<:Real
     x6  = x2^3
     x8  = x2^4
     x10 = x2^5
-    F   = 1.0
-    dV = 0.0 
+    F   = one(T)
+    dV = zero(T)
     if x < D
-        xD = D/x-1
+        xD = D/x - one(T)
         F = exp(-(xD^2))
         dV = -2 * xD * D/x2* F *(c6/x6 + c8/x8 + c10/x10)
     end
@@ -298,10 +298,10 @@ end
 function der2_potential(r::T) where T<:Real
     """Derivative V''(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm^2"""       
     x   = r/rm
-    F   = 1.0
-    dF  = 0.0
-    ddF = 0.0
-    xD = D/x-1
+    F   = one(T)
+    dF  = zero(T)
+    ddF = zero(T)
+    xD = D/x - one(T)
     if x < D  
         F = exp(-xD^2)
         dF = 2*D*xD*F/x^2
@@ -324,7 +324,7 @@ function init_V_cutoff(rcut_in::Float64)
     rcut[]=rcut_in 
 end
 
-@inline function Vcutoff(r::T) where T<:Number
+@inline function Vcutoff(r::T) where T<:Real
     """Possible pair-potential cutoff - probably too shallow"""
     rc = rcut[]
     if r < rc
@@ -335,7 +335,7 @@ end
     end
 end
 
-@inline function der_Vcutoff(r::T) where T<:Number
+@inline function der_Vcutoff(r::T) where T<:Real
     """Derivative of the pair-potential cutoff"""
     rc = rcut[]
     if r < rc
@@ -346,10 +346,10 @@ end
     end
 end
 
-@inline function potential_with_cutoff(r::T)  where T<:Number
+@inline function potential_with_cutoff(r::T)  where T<:Real
     return potential(r) * Vcutoff(r)
 end
-@inline function der_potential_with_cutoff(r::T)  where T<:Number
+@inline function der_potential_with_cutoff(r::T)  where T<:Real
     return der_potential(r) * Vcutoff(r) + potential(r) * der_Vcutoff(r)  
 end
 
