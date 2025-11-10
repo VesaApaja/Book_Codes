@@ -13,7 +13,10 @@
 
 module QMC_Statistics
 
-export init_stat, add_sample!, get_stats, t_Stat
+#using FFTW
+using Statistics
+
+export init_stat, add_sample!, get_stats, t_Stat, integrated_autocorr
 
 mutable struct t_StatData
     n    ::Int64  
@@ -46,7 +49,6 @@ end
 
 function add_sample!(stat ::t_Stat, dat)
     stat.finished  = false
-
     @. stat.sample.data  += dat
     @. stat.sample.data2 += dat^2
     stat.sample.n += 1
@@ -131,6 +133,46 @@ function get_stats_1(stat ::t_Stat)
     var = sqrt(var2) 
     std = var/sqrt(N)
     return ave, std, input_σ2, N
+end
+
+
+function integrated_autocorr(data::Vector{Float64}; maxlag::Int=0)
+    N = length(data)
+    println("QMC_Statistics  integrated_autocorr estimating τ_int using $N values")
+    ave = sum(data)/N
+    ave2 = sum(data.^2)/N
+    σ2 = abs(ave2 - ave^2)
+    if maxlag == 0
+        maxlag = N ÷ 2   # default
+    end
+    # ρ[k] is autocovariance at lag k
+    ρ = zeros(maxlag)
+    for k in 1:maxlag
+        ρ[k] = sum((data[1:N-k] .- ave) .* (data[1+k:N] .- ave)) / ((N - k) * σ2)
+    end
+    #=
+    # FFT version needs packages FFTW and Statistics
+    # assumes wrap-around correlations, so the result deviates for large k from the sum version
+    function autocorr_fft(x)
+        x = x .- mean(x)
+        N = length(x)
+        f = real(ifft(abs2.(fft(x))))
+        f = f ./ ((N:-1:1) .* var(x)) # (N:-1:1) is [N,N-1,...,1]
+        return f
+    end
+    ρ_fft = autocorr_fft(data)
+    #    
+    open("energy_autocorr","w") do f
+        for (r, r_fft) in zip(ρ, ρ_fft)
+            println(f, "$r  $r_fft")
+        end
+    end
+    exit()
+    =# 
+    # Stop summing when ρ becomes negative
+    # ρ is computed for just one sample, so it's not a smooth curve
+    τ_int = 1 + 2*sum(ρ[ρ .> 0])
+    return τ_int
 end
 
 
