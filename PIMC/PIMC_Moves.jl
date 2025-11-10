@@ -93,7 +93,7 @@ function bead_move!(PIMC::t_pimc, beads::t_beads, links::t_links, par::Bead_Move
     
     beads.X[:, id] .+= par.step .* (rand(dim) .- 0.5)
     pbc && periodic!(view(beads.X, :, id), L)
-            
+
     Unew = U_update(PIMC, beads, view(xold,:), id, :move)    
     Knew = K(PIMC, beads, links, id)
     Snew = Unew + Knew
@@ -447,7 +447,7 @@ function worm_move!(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::
             worm_acc[name_to_num[move]] =  worm_move_head!(PIMC, beads, links)
         elseif move == :bisection 
             worm_acc[name_to_num[move]] = bisection_move!(PIMC, beads, links)            
-        elseif move == :swap            
+        elseif move == :swap
             worm_acc[name_to_num[move]] = worm_swap!(PIMC, beads, links)
         elseif move == :advance
             worm_acc[name_to_num[move]] = worm_advance!(PIMC, beads, links)
@@ -479,7 +479,7 @@ function worm_move!(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::
             if open_acceptance > 30.0
                 PIMC_Common.worm_K += 1
             end
-            PIMC_Common.worm_K = clamp(PIMC_Common.worm_K, ceil(Int64, 0.1 * PIMC.M), ceil(Int64, 0.3 * PIMC.M))
+            PIMC_Common.worm_K = clamp(PIMC_Common.worm_K, ceil(Int64, 0.2 * PIMC.M), ceil(Int64, 0.3 * PIMC.M))
             @printf("open_acceptance  = %-8.2f  worm_K = %-15d\n", open_acceptance, PIMC_Common.worm_K)
         end    
     end
@@ -585,6 +585,7 @@ function worm_swap!(PIMC::t_pimc, beads::t_beads, links::t_links,
     
     t_swap_beads = mod1(t_H + k, M) # slice of swap beads 
     swap_beads = active_beads_on_slice(beads, t_swap_beads) # swap candidates
+
     #if PIMC.tail in swap_beads
     #    no_swap_reason[1] +=1  
     #    return 100*par.nacc/par.ntry
@@ -647,7 +648,6 @@ function worm_swap!(PIMC::t_pimc, beads::t_beads, links::t_links,
     
     #
     # Hard limit new head -> tail, make sure worm can close
-    #
     if enforce_worm_limit(PIMC, beads, newH, PIMC.tail)
         # reject move
         no_swap_reason[4] += 1
