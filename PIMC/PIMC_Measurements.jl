@@ -15,7 +15,7 @@ using PIMC_Systems
 
 using PIMC_Action_Interface
 
-export add_measurement!
+export add_measurement!, replace_measurement!
 export rho_s
 export meas_density_profile, meas_superfluid_fraction, meas_radial_distribution
 export meas_cycle_count, meas_obdm, meas_head_tail_histogram
@@ -29,6 +29,15 @@ function add_measurement!(PIMC::t_pimc, frequency::Int64, name::Symbol,
     push!(PIMC.measurements, measurement)    
     println("Added measurement: ",name," frequency ",frequency)
 end
+
+function replace_measurement!(PIMC::t_pimc, frequency::Int64, name::Symbol,
+                              exe::Function, datasize::Int64, blocksize::Int64,
+                              filename::String)
+    PIMC.measurements = filter(m -> m.name != name, PIMC.measurements)
+    add_measurement!(PIMC, frequency, name, exe, datasize, blocksize, filename)
+    println("Replaced measurement: ",name," frequency ",frequency)
+end
+
 
 # lightweight buffers, not thread safe!
 const vec_buffer = Vector{Float64}(undef, dim)
@@ -242,7 +251,7 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
                     Unew += U_update(PIMC, beads, view(buf, :), id, :add; fake=true) # dummy old position
                 end                
                 # new U when particle moves from rT -> rfakeH := beads.X[:, PIMC.tail]
-                Unew += U_update(PIMC, beads, rT, PIMC.tail, :move, fake=true)
+                Unew += U_update(PIMC, beads, rT, PIMC.tail, :move; fake=true) 
                 
                 
                 ΔU = Unew - Uold
@@ -250,11 +259,11 @@ function meas_obdm(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
                 # obdm ∝ <exp(-ΔS)>, rho_0(head, fake head) is left from staging
                 ρ₀_val = rho_0(rH, rfakeH, λ, Δτ, L)                
                 val = exp(-ΔU + μ*Δτ) * ρ₀_val
-                if val>10.0
-                    open("obdm_warn.log", "a") do io
-                        println(io, "$(PIMC.ipimc) $bin $val $ΔU $(Δτ) $(rH) $(rfakeH) $(rT) $ρ₀_val")
-                    end
-                end
+                #if val>10.0
+                #    open("obdm_warn.log", "a") do io
+                #        println(io, "$(PIMC.ipimc) $bin $val $ΔU $(Δτ) $(rH) $(rfakeH) $(rT) $ρ₀_val")
+                #    end
+                #end
                 # bin it            
                 obdm[bin] += val
             end                    
@@ -595,7 +604,7 @@ function meas_superfluid_fraction(PIMC::t_pimc, beads::t_beads, links::t_links, 
     
 end
 
-        #
+#
         
 
 function meas_cycle_count(PIMC::t_pimc, beads::t_beads, links::t_links, meas::Union{t_measurement, Nothing}= nothing)
@@ -654,10 +663,7 @@ function meas_cycle_count(PIMC::t_pimc, beads::t_beads, links::t_links, meas::Un
     end
 end
 
- 
 
-
-       
 #
 # Generic energy computations, not measurements
 # =============================================
@@ -669,10 +675,10 @@ function E_pot_bead(PIMC::t_pimc, beads::t_beads, id::Int64)
     beads.active[id] == false && (return Epot)
 
     r1 = @view beads.X[:, id]
-    if PIMC.confinement_potential !== nothing        
+    if has_potential(PIMC.confinement_potential)
         Epot += PIMC.confinement_potential(r1)
     end
-    if PIMC.pair_potential !== nothing
+    if has_potential(PIMC.pair_potential)
         V = PIMC.pair_potential
         L = PIMC.L
         t = beads.ts[id]        
