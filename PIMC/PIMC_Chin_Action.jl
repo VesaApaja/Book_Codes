@@ -8,6 +8,7 @@ using LinearAlgebra
 LinearAlgebra.BLAS.set_num_threads(1) 
 using StaticArrays
 using BenchmarkTools
+using InteractiveUtils
 
 push!(LOAD_PATH,".")
 using PIMC_Structs
@@ -18,7 +19,7 @@ using PIMC_Reports: report_energy
 using PIMC_Utilities: active_beads_on_slice, boson_virial_exchange_energy
 
 export U, K, U_stored, U_update, update_stored_slice_data
-export meas_E_th, meas_E_vir, init_action!
+export meas_E_th, meas_E_vir, init_action!, meas_virial_pressure
 export opt_chin_a1_chin_t0
 
 # M = 6
@@ -71,6 +72,7 @@ const vec_buffer2 = MVector{dim, Float64}(undef)
 const vec_buffer3 = MVector{dim, Float64}(undef) 
 
 
+const gradVTVx_buffer = Matrix{Float64}(undef, dim, N_slice_max)
 
 
 # Storage for V(x) and [V,[T,V]](x) and force F on each slice
@@ -98,8 +100,15 @@ mutable struct t_estore
 end
 EVm_store = t_estore(0, 0, 0.0)
 
+# Exchange energy estimator storage 
+mutable struct t_exc_store
+    ipimc ::Int64
+    iworm::Int64
+    Eexc::Float64    
+end
+Eexc_store = t_exc_store(0, 0, 0.0)
 
-function init_action!(PIMC::t_pimc, beads::t_beads)
+function init_action!(PIMC::t_pimc, beads::t_beads) ::Nothing
     """Init Chin Action"""
     global stored    
     β = PIMC.β
@@ -133,6 +142,7 @@ function init_action!(PIMC::t_pimc, beads::t_beads)
     if length(stored.V) != M
         stored = t_stored(M, length(beads.ids))
     end
+    return nothing
 end
 
 
@@ -140,7 +150,7 @@ end
 # ==============================
 
 
-function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false) ::Float64
     M = PIMC.M    
     β = PIMC.β
     τ = PIMC.τ
@@ -151,11 +161,13 @@ function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
     
     Ekin1 = dim*N*M/(2*β)
     Ekin2::Float64 = 0.0
-    @inbounds for id in beads.ids[beads.active]
-        id_next = links.next[id]
-        Δr2 = dist2(view(beads.X, :, id), view(beads.X, :, id_next), L)        
-        Δτ = mod(beads.times[id_next] - beads.times[id], β)
-        Ekin2 += Δr2/Δτ       
+    @inbounds begin
+        for id in beads.ids[beads.active]
+            id_next = links.next[id]
+            Δr2 = dist2(view(beads.X, :, id), view(beads.X, :, id_next), L)        
+            Δτ = mod(beads.times[id_next] - beads.times[id], β)
+            Ekin2 += Δr2/Δτ
+        end
     end
        
     Ekin  = Ekin1 - Ekin2/(4*λ*β) # large cancellation
@@ -181,10 +193,11 @@ function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
         # block full, report
         report_energy(PIMC, meas)
     end
+    return E
 end
 
 
-function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
+function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false) ::Float64
     """Virial energy estimator"""
 
     M = PIMC.M    
@@ -195,8 +208,13 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
     Ekin = dim*N/(2*β)  # exact distinguishable N-particle kinetic energy
     Eexc::Float64 = 0.0 
     if bose
-        # exchange energy term        
+        # exchange energy term
         Eexc = boson_virial_exchange_energy(PIMC, beads, links)
+        # store for pressure measurement
+        Eexc_store.ipimc = PIMC.ipimc
+        Eexc_store.iworm = PIMC.iworm
+        Eexc_store.Eexc  = Eexc
+        # 
         Ekin += Eexc
     end
 
@@ -212,13 +230,18 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
     # for debugging:
     if false
         PIMC_Common.TEST = true
+        @btime Evir_chin_scaled($PIMC, $beads, $links)
+        @btime Evir_chin_direct($PIMC, $beads, $links)        
         t_scaled = @elapsed begin
             Evir_scaled = Evir_chin_scaled(PIMC, beads, links)
         end
+        
         t_direct = @elapsed begin
             Evir_direct = Evir_chin_direct(PIMC, beads, links)
-        end
-        @printf("TEST: scaled vs. direct E_vir: %0.10f %.10f %.10f\n", Evir_scaled, Evir_direct, Evir_scaled - Evir_direct)
+        end        
+                
+        @printf("TEST: E_vir scaled  %0.10f  E_vir direct  %0.10f  ΔE %0.10f \n",
+                Evir_scaled, Evir_direct, Evir_scaled - Evir_direct)
         @printf("TEST  timings\n")
         @printf("scaled %15.5f\n",t_scaled)
         @printf("direct %15.5f\n",t_direct)
@@ -256,8 +279,124 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
         # block full, report
         report_energy(PIMC, meas)
     end
+    return E
    
-   
+end
+
+Pcoll::Float64 = 0.0
+n_Pcoll::Int64 = 0
+
+function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement,
+                              rref::Matrix{Float64} = rref_buffer,
+                              gradVm::MVector{dim, Float64} = vec_buffer,
+                              gradVTVx::Matrix{Float64} = gradVTVx_buffer; opt::Bool=false,
+                              ) ::Float64
+
+    global Pcoll, n_Pcoll
+    
+    M = PIMC.M
+    τ = PIMC.τ
+    L = PIMC.L
+    β = PIMC.β
+        
+    dx_long = zeros(dim)  # pre-allocate 
+    dx_short = zeros(dim)
+    r = zeros(dim)
+    dr = zeros(dim)
+    
+    faca_1 = chin_v2
+    faca_2 = chin_v1    
+    facb_1 = τ^2*chin_u0*(1-2*chin_a1) 
+    facb_2 = τ^2*chin_u0*chin_a1
+    vir_pot::Float64 = 0.0
+    vir_exc::Float64 = 0.0
+    
+    # Co-moving centroid reference for all active beads
+    centroid_ref!(PIMC, beads, links)      
+    # 
+    # potential term
+    #
+    @inbounds begin
+        for m in 1:M
+            bs = active_beads_on_slice(beads, m)
+            nbs = length(bs)                         
+            compute_gradVTV!(PIMC, beads, bs, gradVTVx)
+            if (m+1)%3 == 0
+                faca = faca_1
+                facb = facb_1
+            else
+                faca = faca_2
+                facb = facb_2
+            end        
+            for i in 1:nbs
+                b = bs[i]
+                gradVx = @view stored.F[:, b]
+                gradVm .= faca*gradVx + facb*gradVTVx[:, i]
+                vir_pot += -τ/2 * dot(view(rref, :, b), gradVm)
+            end
+        end
+    end # inbounds
+    #
+    # exchange term, uses boson_virial_exchange_energy from PIMC_Utilities
+    # only the factor differs by from exchange energy Eexh factor -1/β -> pressure factor 2/dΩ 
+    #
+    
+    if bose       
+        # Exc may be stored
+        if Eexc_store.ipimc == PIMC.ipimc && Eexc_store.iworm == PIMC.iworm
+            Eexc =  Eexc_store.Eexc
+        else
+            Eexc = boson_virial_exchange_energy(PIMC, beads, links)
+            Eexc_store.ipimc = PIMC.ipimc
+            Eexc_store.iworm = PIMC.iworm
+            Eexc_store.Eexc = Eexc
+        end
+        vir_exc  = -Eexc*β        
+    end 
+
+    
+    Ω = L^dim # volume, cubic box
+    
+    # virial pressure
+    # P = N*k*T/Ω  | ideal gas pressure
+    #    + 2/(dim*Ω) < 1/M ∑_m=1^M  ∑_m=1^M (x_{M+m}-x_m)⋅(x_{M+m-1}-x_{M+m})/(4π t_{M+m-1}τ) | exchange 
+    #                  + τ/2 ∑_m=1^M x_m^* ⋅  ∂\tilde V_m/∂x_m >
+    #  :=  N*k*T/Ω  + 2/(dim*Ω) * vir
+    #       
+    P = N/(β*Ω) + 2/(dim*Ω)  * (vir_exc + vir_pot)
+    #println("PRESSURE $P  exchange term $(2/(dim*Ω) *vir_exc)  potential term $(2/(dim*Ω) *vir_pot)")
+
+    # barostat to find P=0
+    #PIMC_Common.TEST = true
+    #Pcoll += P
+    #n_Pcoll += 1
+    #V = PIMC.L^dim*(1 - 1e-3 * Pcoll/n_Pcoll) # change volume slightly
+    #L = V^(1/dim) # new box
+    #ρ = N/V
+    #println("Virial pressure $P ; barostat sets new box side $L and new density $ρ")
+    #PIMC.L = L 
+    
+    if opt
+        return P
+    end
+    
+    # Collect statistics
+    add_sample!(meas.stat, P)
+    if meas.stat.finished
+        # block full
+        ave, std, input_σ2, Nblocks  = get_stats(meas.stat)
+        open(meas.filename, "a") do f
+            println(f, "$ave $std")
+        end
+        @printf("Virial Pressure %12.8f ± %12.8f\n", ave, std)
+        # set HDF4 data Dict
+        results[string(meas.name)] = Dict(
+            "Pressure" => ave, 
+            "std" => std
+        )
+        
+    end
+    return P
 end
 
 
@@ -266,7 +405,7 @@ end
 # ================================
 # based on minimizing virial and thermal energy difference
 #
-function get_ΔE(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement)
+function get_ΔE(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement) ::Tuple{Float64, Float64, Float64}
     EVm_store.ipimc = 0 # force recalculation of EVm
     Eth  = meas_E_th(PIMC, beads, links, meas, opt=true)
     Evir = meas_E_vir(PIMC, beads, links, meas, opt=true)
@@ -290,7 +429,7 @@ end
 
 E_store = t_E(0.0, 0.0, false)
 
-function opt_chin_a1_chin_t0(PIMC::t_pimc, beads::t_beads, links::t_links, a1_t0_col::t_a1_t0 = a1_t0_col, E_store::t_E=E_store)
+function opt_chin_a1_chin_t0(PIMC::t_pimc, beads::t_beads, links::t_links, a1_t0_col::t_a1_t0 = a1_t0_col, E_store::t_E=E_store) ::Nothing
     """Optimize Chin action parameters chin_a1 and chin_t0 based on |Eth - Evir|."""
     # dummy stat and measurement
     stat = t_Stat()
@@ -383,12 +522,12 @@ function opt_chin_a1_chin_t0(PIMC::t_pimc, beads::t_beads, links::t_links, a1_t0
         @printf(f, "%15.5f %15.5f %15.5f %15.5f\n", chin_a1, chin_t0, Eth, Evir)
     end
     @printf("Optimized so far chin_a1 = %-8.5f chin_t0 = %-8.5f\n", chin_a1, chin_t0)
-    
+    return nothing
 end
 
 
 
-function get_EVm(PIMC::t_pimc, beads::t_beads)
+function get_EVm(PIMC::t_pimc, beads::t_beads) ::Float64
     """ ∂β [∑_m=1^M τ V_m(x_m;τ)]"""
     #
     # β = Mτ/3 for Chin Action
@@ -427,7 +566,7 @@ function get_EVm(PIMC::t_pimc, beads::t_beads)
 end
 
 
-function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol)
+function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol) ::Nothing
     """Computes change in potential energy ΔV to stored.ΔV[m]"""
      
     L = PIMC.L
@@ -440,31 +579,33 @@ function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}
     if act == :move
         # move from rsold -> rs := beads.X[:, id] 
         rs = @view beads.X[:, id]
-        if V_ext !== nothing
+        if has_potential(V_ext)
             ΔV += V_ext(rs) - V_ext(rsold) 
         end
-        if Vpair !== nothing                        
-            @inbounds for b in bs
-                b==id && continue
-                ri = @view beads.X[:, b]                
-                @inbounds for (sign, rs_) in zip([+1, -1], [rs, rsold])                    
-                    rsi = dist(rs_, ri, L)
-                    if pbc
-                        if rsi > L/2
-                            continue # pbc cutoff
+        if has_potential(Vpair)
+            @inbounds begin
+                for b in bs
+                    b==id && continue
+                    ri = @view beads.X[:, b]                
+                    for (sign, rs_) in zip([+1, -1], [rs, rsold])                    
+                        rsi = dist(rs_, ri, L)
+                        if pbc
+                            if rsi > L/2
+                                continue # pbc cutoff
+                            end
                         end
+                        ΔV += sign*Vpair(rsi)
                     end
-                    ΔV += sign*Vpair(rsi)
                 end
-            end
+            end # inbounds
         end
     elseif act == :remove
         # bead id is removed, there's no new rs
         # move from rsold -> nothing
-        if V_ext !== nothing
+        if has_potential(V_ext)
             ΔV -= V_ext(rsold) 
         end
-        if Vpair !== nothing            
+        if has_potential(Vpair)
             # potential from all to rsold is subtracted
             @inbounds for b in bs
                 ri = @view beads.X[:, b]
@@ -484,10 +625,10 @@ function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}
         # bead id is added, rsold is dummy
         # move from nothing -> rs := beads.X[:, id]
         rs = @view beads.X[:, id]
-        if V_ext !== nothing
+        if has_potential(V_ext)
             ΔV += V_ext(rs) 
         end
-        if Vpair !== nothing            
+        if has_potential(Vpair)
             # potential from rs to rest is added            
             @inbounds for b in bs
                 b == id && continue # id may already be absent from bs
@@ -511,17 +652,18 @@ end
 function compute_ΔF(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64}, bs::Vector{Int64},
                     id::Int64, act::Symbol,
                     vec_rsi::MVector{dim, Float64} = vec_buffer,
-                    vec_rks::MVector{dim, Float64} = vec_buffer2
-                    
-                    )
+                    vec_rks::MVector{dim, Float64} = vec_buffer2                    
+                    ) ::Nothing
     """ ΔF = ∇ ΔV for each k after change in one bead (move, remove or add) to stored.ΔF[:, bs] """
     
     L = PIMC.L 
     ∇V_ext = PIMC.grad_confinement_potential   
     V´ =  PIMC.der_pair_potential
-    @inbounds for b in bs
-        @inbounds for d in 1:dim
-            stored.ΔF[d, b] = 0.0
+    @inbounds begin
+        for b in bs
+            for d in 1:dim
+                stored.ΔF[d, b] = 0.0
+            end
         end
     end
     s = id # shorter name
@@ -530,123 +672,130 @@ function compute_ΔF(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64
     
     if act == :move
         # rsold -> rs := beads.X[:, id]               
-        # updates to forces linked to bead id 
-        if ∇V_ext !== nothing            
-            @inbounds @views stored.ΔF[:, s] .+= ∇V_ext(rs) - ∇V_ext(rsold)
-        end
-        if V´ !== nothing             
-            @inbounds for k in bs
-                if k == s
-                    # change on force acting on s
-                    # from s, all other coordinates moved
-                    @inbounds for i in bs
-                        i==s && continue                       
-                        ri = @view beads.X[:, i]
-                        @inbounds for (sign, rs_) in zip([+1, -1], [rs, rsold])
-                            distance!(rs_, ri, L, vec_rsi)
-                            rsi = norm(vec_rsi)
+        # updates to forces linked to bead id
+        @inbounds begin
+            if has_potential(∇V_ext)
+                @views stored.ΔF[:, s] .+= ∇V_ext(rs) - ∇V_ext(rsold)
+            end
+            if has_potential(V´)
+                for k in bs
+                    if k == s
+                        # change on force acting on s
+                        # from s, all other coordinates moved
+                        for i in bs
+                            i==s && continue                       
+                            ri = @view beads.X[:, i]
+                            for (sign, rs_) in zip([+1, -1], [rs, rsold])
+                                distance!(rs_, ri, L, vec_rsi)
+                                rsi = norm(vec_rsi)
+                                if pbc
+                                    if rsi > L/2
+                                        continue
+                                    end
+                                end
+                                sdVsi::Float64 = sign*V´(rsi)/rsi
+                                @views stored.ΔF[:, s] .+= sdVsi*vec_rsi
+                                #for d in 1:dim
+                                #    stored.ΔF[d, s] += sdVsi*vec_rsi[d]
+                                #end
+                            end
+                        end
+                    else
+                        # change on force acting on k (≠s)
+                        # from k (≠s), only s moved
+                        rk = @view beads.X[:, k]
+                        for (sign, rs_) in zip([+1, -1], [rs, rsold])
+                            distance!(rk, rs_, L, vec_rks)
+                            rks = norm(vec_rks)
                             if pbc
-                                if rsi > L/2
+                                if rks > L/2
                                     continue
                                 end
                             end
-                            sdVsi::Float64 = sign*V´(rsi)/rsi
-                            @inbounds @views stored.ΔF[:, s] .+= sdVsi*vec_rsi
-                            #@inbounds for d in 1:dim
-                            #    stored.ΔF[d, s] += sdVsi*vec_rsi[d]
+                            sdVks::Float64 = sign*V´(rks)/rks
+                            @views stored.ΔF[:, k] .+= sdVks*vec_rks
+                            #for d in 1:dim
+                            #    stored.ΔF[d, k] += sdVks*vec_rks[d]
                             #end
                         end
                     end
-                else
-                    # change on force acting on k (≠s)
-                    # from k (≠s), only s moved
-                    rk = @view beads.X[:, k]
-                    @inbounds for (sign, rs_) in zip([+1, -1], [rs, rsold])
-                        distance!(rk, rs_, L, vec_rks)
-                        rks = norm(vec_rks)
-                        if pbc
-                            if rks > L/2
-                                continue
-                            end
-                        end
-                        sdVks::Float64 = sign*V´(rks)/rks
-                        @inbounds @views stored.ΔF[:, k] .+= sdVks*vec_rks
-                        #@inbounds for d in 1:dim
-                        #    stored.ΔF[d, k] += sdVks*vec_rks[d]
-                        #end
-                    end
                 end
-            end                
+            end # inbounds
         end
     elseif act == :remove
         # minus forces linked to bead that was at rsold (s is not in bs)
-        if ∇V_ext !== nothing            
-            @inbounds @views stored.ΔF[:, s] -= ∇V_ext(rsold)
-        end
-        if V´ !== nothing            
-            @inbounds for k in bs
-                # change on force acting on k by removing s
-                rk = @view beads.X[:, k]                    
-                distance!(rk, rsold, L, vec_rks)
-                rks = norm(vec_rks)
-                if pbc
-                    if rks > L/2
-                        continue
+        @inbounds begin
+            if has_potential(∇V_ext)
+                @views stored.ΔF[:, s] -= ∇V_ext(rsold)
+            end
+            if has_potential(V´)
+                for k in bs
+                    # change on force acting on k by removing s
+                    rk = @view beads.X[:, k]                    
+                    distance!(rk, rsold, L, vec_rks)
+                    rks = norm(vec_rks)
+                    if pbc
+                        if rks > L/2
+                            continue
+                        end
                     end
-                end
-                dVks::Float64 = V´(rks)/rks
-                @inbounds @views stored.ΔF[:, k] .-= dVks*vec_rks                
-            end                            
+                    dVks::Float64 = V´(rks)/rks
+                    @views stored.ΔF[:, k] .-= dVks*vec_rks                
+                end                            
+            end
         end
     elseif act == :add
         # plus forces linked to bead id (s in list bs), no rsold
         # take out old outdated force, if any; an inactive bead should have zero force
         # looks strange, but now stored.F[:, s] + stored.ΔF[:, s] = 0
-        @inbounds for d in 1:dim
-            stored.ΔF[d, s] = -stored.F[d, s]
-        end
-        if ∇V_ext !== nothing            
-            @inbounds @views stored.ΔF[:, s] .+= ∇V_ext(rs)
-        end
-        if V´ !== nothing
-            @inbounds for k in bs
-                k == s && continue
-                rk = @view beads.X[:, k]
-                distance!(rk, rs, L, vec_rks)
-                rks = norm(vec_rks)
-                if pbc
-                    if rks > L/2
-                        continue
+        @inbounds begin
+            for d in 1:dim
+                stored.ΔF[d, s] = -stored.F[d, s]
+            end
+            if has_potential(∇V_ext)
+                @views stored.ΔF[:, s] .+= ∇V_ext(rs)
+            end
+            if has_potential(V´)
+                for k in bs
+                    k == s && continue
+                    rk = @view beads.X[:, k]
+                    distance!(rk, rs, L, vec_rks)
+                    rks = norm(vec_rks)
+                    if pbc
+                        if rks > L/2
+                            continue
+                        end
+                    end
+                    dVks::Float64 = V´(rks)/rks
+                    # force on bead k due to bead s
+                    for d in 1:dim
+                        dd = dVks*vec_rks[d]
+                        stored.ΔF[d, k] = dd # just once for each k
+                        # force on bead s due to bead k  
+                        stored.ΔF[d, s] -= dd # ∑ k(≠s)
                     end
                 end
-                dVks::Float64 = V´(rks)/rks
-                # force on bead k due to bead s
-                @inbounds for d in 1:dim
-                    dd = dVks*vec_rks[d]
-                    stored.ΔF[d, k] = dd # just once for each k
-                    # force on bead s due to bead k  
-                    stored.ΔF[d, s] -= dd # ∑ k(≠s)
-                end
-                    
             end
-        end
+        end # inbounds
     end
     return nothing
 end
 
 
 
-function get_ΔVTV(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol)
+function get_ΔVTV(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol) ::Float64
     """Change in [V,[T,V]] = 2λ∑_i |F_i|^2 after one bead move; F->F_old + ΔF"""
     
     # compute stored.ΔF[:, bs]; call here to make sure ΔVTV uses new values   
     compute_ΔF(PIMC, beads, rsold, bs, id, act)
     ΔVTV = 0.0   
-    @inbounds for k in bs        
-        # d-loop does ΔVTV += 4λ*stored.F[:, k] ⋅ stored.ΔF[:, k] + 2λ*sum(stored.ΔF[:, k].^2),
-        # avoid temporaries of ⋅ and sum
-        @inbounds for d in 1:dim
-            ΔVTV += 4λ * stored.F[d, k] * stored.ΔF[d, k] + 2λ * stored.ΔF[d, k]^2
+    @inbounds begin
+        for k in bs        
+            # d-loop does ΔVTV += 4λ*stored.F[:, k] ⋅ stored.ΔF[:, k] + 2λ*sum(stored.ΔF[:, k].^2),
+            # avoid temporaries of ⋅ and sum
+            for d in 1:dim
+                ΔVTV += 4λ * stored.F[d, k] * stored.ΔF[d, k] + 2λ * stored.ΔF[d, k]^2
+            end
         end
     end
     if act == :remove
@@ -665,9 +814,11 @@ function get_ΔVTV(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64},
     return ΔVTV
 end
 
+
+
 function compute_V!(PIMC::t_pimc,  beads::t_beads, bs::Vector{Int64}, m::Int64,
                     vec_rki::MVector{dim, Float64} = vec_buffer
-                    )
+                    ) ::Nothing
     """ Potential energy on slice, update stored.V_tmp[m]"""
     L = PIMC.L
     V_ext = PIMC.confinement_potential
@@ -675,22 +826,24 @@ function compute_V!(PIMC::t_pimc,  beads::t_beads, bs::Vector{Int64}, m::Int64,
     V = 0.0
     nbs = length(bs)
     # k, i are running indices in bs
-    @inbounds for k in 1:nbs
-        rk = @view beads.X[:, bs[k]]
-        if V_ext !== nothing
-            V += V_ext(rk) 
-        end
-        if V_pair !== nothing
-            @inbounds for i in 1:k-1
-                ri = @view beads.X[:, bs[i]]
-                distance!(rk, ri, L, vec_rki)                
-                rki = norm(vec_rki)
-                if pbc
-                    if rki > L/2
-                        continue # pbc cutoff
+    @inbounds begin
+        for k in 1:nbs
+            rk = @view beads.X[:, bs[k]]
+            if has_potential(V_ext)
+                V += V_ext(rk) 
+            end
+            if has_potential(V_pair)
+                for i in 1:k-1
+                    ri = @view beads.X[:, bs[i]]
+                    distance!(rk, ri, L, vec_rki)                
+                    rki = norm(vec_rki)
+                    if pbc
+                        if rki > L/2
+                            continue # pbc cutoff
+                        end
                     end
+                    V += V_pair(rki)
                 end
-                V += V_pair(rki)
             end
         end
     end
@@ -701,43 +854,44 @@ end
 
 function compute_F!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
                     vec_rki::MVector{dim, Float64} = vec_buffer
-                    )
+                    ) ::Nothing
     """ Forces F=∇V on beads bs (active beads on the same slice), update stored.F_tmp[:, bs]"""
     L = PIMC.L
     ∇V_ext = PIMC.grad_confinement_potential   
     V´ = PIMC.der_pair_potential
-    @inbounds for b in bs
-        @inbounds for d in 1:dim        
-            stored.F_tmp[d, b] = 0.0
+    @inbounds begin
+        for b in bs
+            for d in 1:dim        
+                stored.F_tmp[d, b] = 0.0
+            end
         end
     end
     # k, i are bead indices 
-    @inbounds for k in bs        
-        rk = @view beads.X[:, k]
-        if ∇V_ext !== nothing
-            @inbounds for d in 1:dim
-                stored.F_tmp[d, k] += ∇V_ext(rk)[d]
-            end
-        end
-        if V´ !== nothing            
-            @inbounds for i in bs
-                i==k && continue
-                ri = @view beads.X[:, i]
-                distance!(rk, ri, L, vec_rki)                
-                rki = norm(vec_rki)
-                if pbc
-                    if rki > L/2
-                        continue
-                    end
+    @inbounds begin
+        for k in bs        
+            rk = @view beads.X[:, k]
+            if has_potential(∇V_ext)
+                for d in 1:dim
+                    stored.F_tmp[d, k] += ∇V_ext(rk)[d]
                 end
-                dVki::Float64 = V´(rki)/rki
-                @inbounds @views stored.F_tmp[:, k] .+= dVki*vec_rki
-                #@inbounds for d in 1:dim
-                #    stored.F_tmp[d, k] += dVrki*vec_rki[d]
-                #end
+            end
+            if has_potential(V´)
+                for i in bs
+                    i==k && continue
+                    ri = @view beads.X[:, i]
+                    distance!(rk, ri, L, vec_rki)                
+                    rki = norm(vec_rki)
+                    if pbc
+                        if rki > L/2
+                            continue
+                        end
+                    end
+                    dVki::Float64 = V´(rki)/rki
+                    @views stored.F_tmp[:, k] .+= dVki*vec_rki                   
+                end
             end
         end
-    end
+    end # inbounds
     return nothing
 end
 
@@ -747,8 +901,10 @@ end
 #  F_i = ∇_i confinement_potential(r_i)+ sum_{j(\ne i)} ∇_i pair_potential(r_{ij}) 
 #
    
+# also possible to use X::StridedMatrix{T}, didn't see difference 
 
-function get_Vx_F(PIMC::t_pimc, X::AbstractArray{T}, k::Int64) where T<:Real
+function get_Vx_F(PIMC::t_pimc{PIMC_Common.action, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2},
+                  X::AbstractMatrix{T}, k::Int64)  where {T<:Real, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2} 
     """Potential Vx and force F (used for [V,[T,V]]) for kth bead on a slice"""
     #
     # This is the *slow* version, used by coordinate scaling derivatives
@@ -759,47 +915,50 @@ function get_Vx_F(PIMC::t_pimc, X::AbstractArray{T}, k::Int64) where T<:Real
     ∇V_ext = PIMC.grad_confinement_potential   
     V  = PIMC.pair_potential
     V´ = PIMC.der_pair_potential
-    
-    nbs = size(X,2) # mostly N        
-    Fk = zeros(eltype(X[1,1]), dim) # allocates
-    Vxk = zero(X[1,1])
-    if V_ext !== nothing
-        Vxk += V_ext(view(X, :, k)) 
-        @inbounds @views Fk .+= ∇V_ext(view(X, :, k))
-    end
-    if V !== nothing
-        vec_rki = zeros(eltype(X[1,1]), dim)   # allocates   
-        rk = @view X[:, k]            
-        @inbounds for i in 1:nbs
-            i==k && continue
-            ri = @view X[:, i] # X is indexed with particle index, not bead id 
-            distance!(rk, ri, L, vec_rki)                
-            rki = norm(vec_rki)
-            if pbc
-                if rki > L/2
-                    continue # pbc cutoff
+        
+    nbs = size(X,2) # mostly N   
+    Fk = zeros(T, dim) # allocates
+    Vxk = zero(T)
+    @inbounds begin
+        if has_potential(V_ext)
+            Vxk += V_ext(view(X, :, k)) 
+            @views Fk .+= ∇V_ext(view(X, :, k))
+        end
+        if has_potential(V)
+            vec_rki = zeros(T, dim)   # allocates   
+            rk = @view X[:, k]
+            for i in 1:nbs
+                i==k && continue
+                ri = @view X[:, i] # X is indexed with particle index, not bead id
+                distance!(rk, ri, L, vec_rki)                
+                rki = norm(vec_rki)
+                if pbc
+                    if rki > L/2
+                        continue # pbc cutoff
+                    end
+                end
+                @views Fk .+=  V´(rki)*vec_rki/rki          
+                if i<k
+                    Vxk += V(rki) #  ∑_{i(<k)} V(r_ki)
                 end
             end
-            @inbounds @views Fk .+=  V´(rki)*vec_rki/rki          
-            if i<k
-                Vxk += V(rki) #  ∑_{i(<k)} V(r_ki)
-            end
         end
-    end
+    end #inbounds
     Vxk, Fk
 end
 
-function Vx_and_VTVx(PIMC::t_pimc, X::AbstractArray{T}) where T<:Real
-    """Potential V(x) and commutator [V[T,V]](x) = 2λ|F(x)|^2 = 2λ|∂_x V(x)|^2 for one slice"""    
-    if PIMC.confinement_potential == nothing && PIMC.pair_potential == nothing
-        return 0.0, 0.0
+function Vx_and_VTVx(PIMC::t_pimc{PIMC_Common.action, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2},
+                     X::AbstractMatrix{T}) where {T<:Real, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2} 
+    """Potential V(x) and commutator [V[T,V]](x) = 2λ|F(x)|^2 = 2λ|∂_x V(x)|^2 for one slice"""
+    if !has_potential(PIMC.confinement_potential)  && !has_potential(PIMC.pair_potential)
+        return zero(T), zero(T)
     end
     
-    nbs = size(X,2) # mostly N
-    Vx = zero(X[1,1])
-    VTVx = zero(X[1,1])
-    @inbounds for k in 1:nbs 
-        V, F = get_Vx_F(PIMC, X, k) # F is force on kth bead
+    nbs = size(X,2) # mostly N    
+    Vx = zero(T)
+    VTVx = zero(T)
+    @inbounds  for k in 1:nbs
+        V, F = get_Vx_F(PIMC, X, k) # F is force on kth bead        
         VTVx += 2λ*sum(F.^2)
         Vx += V 
     end
@@ -809,108 +968,141 @@ function Vx_and_VTVx(PIMC::t_pimc, X::AbstractArray{T}) where T<:Real
 end
 
 
+const Vtilde_cache = Dict{DataType, Any}()
 
-function Evir_chin_scaled(PIMC::t_pimc, beads::t_beads, links::t_links,
-                          dr::MVector{dim, Float64} = vec_buffer,
-                          # oversized buffer, just ignore last unset entries
-                          rref::MMatrix{dim, N_slice_max, Float64} = rref_buffer 
-                          )
-    """Scaled potential derivative ∑_m ∂β'[Vtilde_m(x_m^s; τ')]|β'=β, used in virial energy estimator """
-    #
-    if PIMC.confinement_potential == nothing && PIMC.pair_potential == nothing
-        return 0.0
-    end
+
+function make_Vtilde_buffered(PIMC, beads, links,                              
+                              dr::MVector{dim, Float64} = vec_buffer,
+                              rref::Matrix{Float64} = rref_buffer,
+                              cache = Vtilde_cache)
+    """ Closure to get Vtilde with pre-allocated _Xs_buffer used in AD """
     
-    M = PIMC.M
-    β = PIMC.β
-    L = PIMC.L
-    τ = PIMC.τ
-    V_ext = PIMC.confinement_potential
-    ∇V_ext = PIMC.grad_confinement_potential   
-    V = PIMC.pair_potential
-    V´ =  PIMC.der_pair_potential
-                 
     function Vtilde(β´)
-        """ Vtilde_m(x_m^s; τ) """  
+        """ Vtilde_m(x_m^s; τ) """
+        M = PIMC.M
+        β = PIMC.β
+        L = PIMC.L
+        τ = PIMC.τ
         # β is external constant,only scaling is derived wrt. β´
         # τ-derivative terms are computed analytically in get_EVm()
-        res = 0.0
-        s =  sqrt(β´/β) - 1 # to be derived wrt. β´        
-        # dr = vec_buffer comes from outside scope
-        # sub-optimal, but the dual type has dynamic tags and pre-allocation would need another library
-        _Xs_buffer = Matrix{eltype(s)}(undef, dim, N_slice_max) 
-        @inbounds for m in 1:M
-            bs = active_beads_on_slice(beads, m)
-            nbs = length(bs)             
-            centroid_ref!(PIMC, beads, links, bs, rref)  
-            Xs = @view _Xs_buffer[:, 1:nbs]  # or Matrix{eltype(s)}(undef, dim, nbs)  # scaled coordinates on slice m
-            @inbounds for i in 1:nbs
-                b = bs[i]
-                r_m = @view beads.X[:, b]
-                distance!(r_m, rref[:, i], L, dr)  # don't view an MMatrix               
-                @inbounds @views Xs[:, i] .=  r_m + s*dr
+        
+        T = typeof(β´)
+        s = sqrt(β´/β) - one(T) # to be derived wrt. β´
+        res = zero(T)  #  res=0.0 leads to type instability
+        # use cache _Xs; trailing Matrix{T} makes cache type stable
+        _Xs_buffer = get!(cache, T) do
+            #println("PIMC_Chin_Action: Allocating new _Xs_buffer for scaled coordinates") # just to see it's done only once
+            Matrix{T}(undef, dim, N_slice_max)
+        end ::Matrix{T}
+        # without pre-allocated cache: 
+        #_Xs_buffer = Matrix{T}(undef, dim, N_slice_max)
+        #
+        # Co-moving centroid reference for all active beads
+        centroid_ref!(PIMC, beads, links)  
+        
+        @inbounds @views begin
+            for m in 1:M
+                bs = active_beads_on_slice(beads, m)
+                Xb = beads.X[:, bs]
+                nbs = length(bs)
+                Xs = _Xs_buffer[:, 1:nbs]   # scaled coordinates on slice m
+                for i in 1:nbs
+                    b = bs[i]
+                    r_m = Xb[:, i] 
+                    distance!(r_m, rref[:, b], L, dr)              
+                    Xs[:, i] .=  r_m + s*dr
+                end           
+                # V and VTV at scaled coordinates (slow, can't use update and stored values)
+                Vxs, VTVxs = Vx_and_VTVx(PIMC, Xs)
+                # NB: argument τ, because it's not derived by AD
+                res += V_m(m, Vxs, VTVxs, τ) 
             end
-            # V and VTV at scaled coordinates (slow, can't use update and stored values)
-            Vxs, VTVxs = Vx_and_VTVx(PIMC, Xs)
-            # NB: argument τ, because it's not derived by AD
-            res += V_m(m, Vxs, VTVxs, τ) 
-        end
+        end # inbounds
         res  # unit is energy
     end
-    Evir = 3/M * β*ForwardDiff.derivative(Vtilde, β)  #  derivative evaluated at β´ = β
+    return Vtilde
+end
+
+function Evir_chin_scaled(PIMC::t_pimc, beads::t_beads, links::t_links) ::Float64
+    """Scaled potential derivative ∑_m ∂β'[Vtilde_m(x_m^s; τ')]|β'=β, used in virial energy estimator """
+    
+    if !has_potential(PIMC.confinement_potential) && !has_potential(PIMC.pair_potential)
+        return 0.0
+    end    
+    M = PIMC.M
+    β = PIMC.β    
+    Vtilde = make_Vtilde_buffered(PIMC, beads, links)
+    Evir = 3/M * β*ForwardDiff.derivative(Vtilde, β)
     return Evir    
 end
 
+# rref storage 
+mutable struct t_rref_store
+    ipimc ::Int64
+    iworm::Int64
+    rref::Matrix{Float64}
+end
+rref_store = t_rref_store(0, 0, Matrix{Float64}(undef, 0, 0))
+const rref_buffer = Matrix{Float64}(undef, dim, N_slice_max*M_max) # overkill 
 
-# Co-moving centroid reference for beads bs
-function centroid_ref!(PIMC::t_pimc, beads::t_beads, links::t_links, bs::Vector{Int64},
-                       rref::MMatrix{dim, N_slice_max, Float64},
-                       dr::MVector{dim, Float64} = vec_buffer,
-                       rup::MVector{dim, Float64} = vec_buffer2,
-                       rdo::MVector{dim, Float64} = vec_buffer3    
-                       )
+# Co-moving centroid reference for all active beads
+function centroid_ref!(PIMC::t_pimc, beads::t_beads, links::t_links,                      
+                      dr::MVector{dim, Float64} = vec_buffer,
+                      rup::MVector{dim, Float64} = vec_buffer2,
+                      rdo::MVector{dim, Float64} = vec_buffer3,
+                      rref::Matrix{Float64} = rref_buffer
+                      ) ::Nothing
     """ co-moving centroid reference using M beads up and down"""
+    if PIMC.ipimc == rref_store.ipimc && PIMC.iworm == rref_store.iworm
+        rref = rref_store.rref # copy reference
+        return nothing
+    end
+    
     M = PIMC.M
     L = PIMC.L
-    nbs = length(bs)
-    @inbounds for i in 1:nbs
-        b = bs[i]
-        @inbounds rref[:, i] .= 2*beads.X[:, b]
-        # steps up and down from bead b
-        bup = b 
-        bdo = b 
-        # bead X[:, id] defines the continuous path
-        @inbounds rup .= beads.X[:, b] # path up
-        @inbounds rdo .= beads.X[:, b] # path down
-        @inbounds for _ in 1:M-1
-            bup = links.next[bup]
-            bdo = links.prev[bdo]
-            distance!(view(beads.X, :, bup), rup, L, dr)
-            rup .+=  dr
-            @inbounds rref[:, i] .+= rup
-            distance!(view(beads.X, :, bdo), rdo, L, dr)
-            rdo .+= dr
-            @inbounds rref[:, i] .+= rdo
+    active = beads.ids[beads.active]
+    
+    @inbounds @views begin
+        for b in active
+            rref[:, b] .= 2*beads.X[:, b]
+            # steps up and down from bead b
+            bup = b 
+            bdo = b 
+            # bead X[:, id] defines the continuous path
+            rup .= beads.X[:, b] # path up
+            rdo .= beads.X[:, b] # path down
+            for _ in 1:M-1
+                bup = links.next[bup]
+                bdo = links.prev[bdo]
+                distance!(view(beads.X, :, bup), rup, L, dr)
+                rup .+=  dr
+                rref[:, b] .+= rup
+                distance!(view(beads.X, :, bdo), rdo, L, dr)
+                rdo .+= dr
+                rref[:, b] .+= rdo
+            end
         end
-    end
-    @inbounds rref .*= 1/(2*M)
+        rref .*= 1/(2*M)
+    end # inbounds
+    rref_store.ipimc = PIMC.ipimc
+    rref_store.iworm = PIMC.iworm
+    rref_store.rref = rref # copy reference to rref (which is rref_buffer)
+    return nothing
 end
 
 
-const gradVTVx_buffer = MMatrix{dim, N_slice_max, Float64}(undef)
-const rref_buffer = MMatrix{dim, N_slice_max, Float64}(undef)
 
 function Evir_chin_direct(PIMC::t_pimc, beads::t_beads, links::t_links,
                           gradVm::MVector{dim, Float64} = vec_buffer,
                           dx::MVector{dim, Float64} = vec_buffer2,
                           # oversized buffers, just ignore last unset entries
-                          rref::MMatrix{dim, N_slice_max, Float64} = rref_buffer,
-                          gradVTVx::MMatrix{dim, N_slice_max, Float64} = gradVTVx_buffer
-                          )
+                          rref::Matrix{Float64} = rref_buffer,
+                          gradVTVx::Matrix{Float64} = gradVTVx_buffer
+                          ) ::Float64
     """Virial energy estimator term 1/(2β)*sum_{m=1}^M (x_m-x_m*)⋅ ∂/∂x_m(τ tildeV_m(x_m;τ)) """
     # = τ/(2β)*sum_{m=1}^M (x_m-x_m*)⋅ ∂/∂x_m(tildeV_m(x_m;τ))
     #
-    if PIMC.confinement_potential == nothing && PIMC.pair_potential == nothing
+    if !has_potential(PIMC.confinement_potential) && !has_potential(PIMC.pair_potential)
         return 0.0
     end
     
@@ -923,30 +1115,33 @@ function Evir_chin_direct(PIMC::t_pimc, beads::t_beads, links::t_links,
     VTVx = 0.0
     Evir_chin = 0.0
 
+    centroid_ref!(PIMC, beads, links) # fills rref        
+
     faca_1 = chin_v2
     faca_2 = chin_v1    
     facb_1 = τ^2*chin_u0*(1-2*chin_a1) 
     facb_2 = τ^2*chin_u0*chin_a1
-    @inbounds for m in 1:M
-        bs = active_beads_on_slice(beads, m)
-        nbs = length(bs)        
-        centroid_ref!(PIMC, beads, links, bs, rref)        
-        compute_gradVTV!(PIMC, beads, bs, gradVTVx)
-        if (m+1)%3 == 0
-            faca = faca_1
-            facb = facb_1
-        else
-            faca = faca_2
-            facb = facb_2
-        end        
-        @inbounds for i in 1:nbs
-            b = bs[i]
-            gradVx = @view stored.F[:, b]
-            gradVm .= faca*gradVx + facb*gradVTVx[:, i]                   
-            distance!(view(beads.X, :, b), rref[:, i], L, dx)  # don't view an MMatrix 
-            Evir_chin += dx ⋅ gradVm
+    @inbounds begin
+        for m in 1:M
+            bs = active_beads_on_slice(beads, m)
+            nbs = length(bs)
+            compute_gradVTV!(PIMC, beads, bs, gradVTVx)
+            if (m+1)%3 == 0
+                faca = faca_1
+                facb = facb_1
+            else
+                faca = faca_2
+                facb = facb_2
+            end        
+            for i in 1:nbs
+                b = bs[i]
+                gradVx = @view stored.F[:, b]
+                gradVm .= faca*gradVx + facb*gradVTVx[:, i]                   
+                distance!(view(beads.X, :, b), rref[:, b], L, dx)  # don't view an MMatrix 
+                Evir_chin += dx ⋅ gradVm
+            end
         end
-    end
+    end # inbounds
     Evir_chin *= τ/(2β)
     return Evir_chin
 end
@@ -957,11 +1152,11 @@ const vec_buffer_b =  MVector{dim, Float64}(undef)
 const ∇k∇nV_buffer =  MMatrix{dim, dim, Float64}(undef)
 
 function compute_gradVTV!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
-                              gradVTVx::MMatrix{dim, N_slice_max, Float64},
+                              gradVTVx::Matrix{Float64},
                               vecr::MVector{dim, Float64} = vec_buffer_a,
                               hatr::MVector{dim, Float64} = vec_buffer_b,
                               ∇k∇nV::MMatrix{dim, dim, Float64} = ∇k∇nV_buffer       
-                              )
+                              ) ::Nothing
     
     V_ext = PIMC.confinement_potential
     ∇V_ext = PIMC.grad_confinement_potential
@@ -973,61 +1168,101 @@ function compute_gradVTV!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
     L = PIMC.L
     M = PIMC.M
     
-    gradVTVx .= 0.0    
+    @inbounds gradVTVx .= 0.0    
     nbs = length(bs)
+    
+    Fb = @view stored.F[:, bs]
+    Xb = @view beads.X[:, bs]
 
-    if V_ext !== nothing        
-        for i in 1:nbs
-            b = bs[i]
-            @inbounds gradVTVx[:, i] .= 4λ*∇2V_ext(view(beads.X, :, b))*stored.F[:, b]
+    if has_potential(V_ext)
+        @inbounds begin
+            for i in 1:nbs                
+                gradVTVx[:, i] .= 4λ*∇2V_ext(view(Xb, :, i))*Fb[:, i]
+            end
         end
     end
-    if V !== nothing        
-        f1::Float64 = 0.0 
-        f2::Float64 = 0.0        
+    if has_potential(V)
+        @inbounds begin
+            for k in 1:nbs
+                rk = @view Xb[:, k] 
+                # diagonals, k=n in ∇k∇nV
+                ∇k∇nV .= 0.0       
+                for i in 1:nbs                        
+                    if i==k
+                        continue
+                    end
+                    ri = @view Xb[:, i] 
+                    distance!(ri, rk, L, vecr)
+                    r = norm(vecr)
+                    if pbc
+                        if r>L/2 # pbc cutoff
+                            continue 
+                        end
+                    end
+                    hatr .= vecr/r                                             
+                    f1 = V´(r)/r
+                    f2 = ( V´´(r) - f1 )
+                    ∇k∇nV .+= f2 * (hatr * hatr') + f1 * I                        
+                end
+                Fk = @view Fb[:,k]    
+                gradVTVx_k = @view gradVTVx[:, k]
+                gradVTVx_k .+=  4λ * ∇k∇nV * Fk
+                # off-diagonals, k!=n in ∇k∇nV, symmetric         
+                for n in 1:k-1                  
+                    rn = @view Xb[:, n]      
+                    distance!(rk, rn, L, vecr)
+                    r = norm(vecr)
+                    if pbc
+                        if r>L/2 # pbc cutoff
+                            continue 
+                        end
+                    end
+                    hatr .= vecr/r                    
+                    f1 = -V´(r)/r
+                    f2 = -(V´´(r) +  f1)
+                    ∇k∇nV .= f2 * (hatr * hatr') + f1 * I
+                    Fn = @view Fb[:, n] 
+                    gradVTVx_k .+=  4λ * ∇k∇nV * Fn                    
+                    gradVTVx_n = @view gradVTVx[:, n]
+                    gradVTVx_n .+=  4λ * ∇k∇nV * Fk
+                end
+            end
+        end # inbounds
+        #=
+        # 
+        # same with ∇∇V calculation done separately, later contracted with stored force
+        # 
+        # Preallocate full tensor; makes this slower for larger nbs
+        ∇∇V = [@MMatrix zeros(dim, dim) for _ in 1:nbs, _ in 1:nbs]
+        for k in 1:nbs, n in 1:k-1
+            rn = @view Xb[:, n]
+            rk = @view Xb[:, k]
+            distance!(rk, rn, L, vecr)
+            r = norm(vecr)
+            if pbc
+                if r>L/2 # pbc cutoff
+                    continue 
+                end
+            end
+            hatr .= vecr / r
+            f1 = -V´(r)/r
+            f2 = -(V´´(r) + f1)
+            ∇∇V[k,n] .= f2*(hatr*hatr') + f1*I
+            ∇∇V[n,k] .= ∇∇V[k,n]                # symmetry
+        end
+        # diagonals
         for k in 1:nbs
-            rk = @view beads.X[:, bs[k]]
-            # diagonals, k=n in ∇k∇nV
-            ∇k∇nV .= 0.0       
-            for i in 1:nbs                        
-                if i==k
-                    continue
-                end
-                ri = @view beads.X[:, bs[i]]
-                distance!(ri, rk, L, vecr)
-                r = norm(vecr)
-                if pbc
-                    if r>L/2 # pbc cutoff
-                        continue 
-                    end
-                end
-                hatr .= vecr/r                                             
-                f1 = V´(r)/r
-                f2 = ( V´´(r) - f1 )
-                @inbounds ∇k∇nV .+= f2 * (hatr * hatr') + f1 * I                        
+            ∇∇V[k,k] .= -sum(∇∇V[k,n] for n in 1:nbs if n≠k)
+        end
+        # contraction
+        gradVTVx .= 0
+        for k in 1:nbs
+            for n in 1:nbs
+                gradVTVx[:,k] .+= 4λ * ∇∇V[k,n] * @view Fb[:,n]
             end
-            Fk = @view stored.F[:, bs[k]]
-            @inbounds gradVTVx[:, k] .+=  4λ * ∇k∇nV * Fk
-            # off-diagonals, k!=n in ∇k∇nV, symmetric         
-            for n in 1:k-1                  
-                rn = @view beads.X[:, bs[n]]                  
-                distance!(rk, rn, L, vecr)
-                r = norm(vecr)
-                if pbc
-                    if r>L/2 # pbc cutoff
-                        continue 
-                    end
-                end
-                hatr .= vecr/r                    
-                f1 = -V´(r)/r
-                f2 = -(V´´(r) +  f1)
-                @inbounds ∇k∇nV .= f2 * (hatr * hatr') + f1 * I
-                Fn = @view stored.F[:, bs[n]]
-                @inbounds gradVTVx[:, k] .+=  4λ * ∇k∇nV * Fn
-                Fk = @view stored.F[:, bs[k]]
-                @inbounds gradVTVx[:, n] .+=  4λ * ∇k∇nV * Fk
-            end
-        end           
+        end
+        =#
+        
     end
     
 
@@ -1054,13 +1289,13 @@ function compute_gradVTV!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
     # for i in 1:nbs
     #   @show gradVTVx[:, i] - 4λ*beads.X[:, bs[i]]
     # end
-  
+    return nothing
 end
 
 
 # Modified potential
 # ==================
-function V_m(m::Int64, Vx::T, VTVx::T, τ::Float64) where T<:Number 
+function V_m(m::Int64, Vx::T, VTVx::T, τ::Float64) ::T where T<:Real  
     """Chin Action modified potential with V and [V,[T,V]] on slice m"""
     # τ is not derived with AD, hence Float64
     if (m+1)%3 == 0        
@@ -1072,7 +1307,7 @@ end
 
 # Kinetic action
 # ==============
-function K(PIMC::t_pimc, beads::t_beads, links::t_links)
+function K(PIMC::t_pimc, beads::t_beads, links::t_links) ::Float64
     """Kinetic action of the whole PIMC config"""
     β = PIMC.β
     L = PIMC.L
@@ -1087,7 +1322,7 @@ function K(PIMC::t_pimc, beads::t_beads, links::t_links)
     K
 end
 
-function K(PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64)
+function K(PIMC::t_pimc, beads::t_beads, links::t_links, id::Int64) ::Float64
     """Kinetic action of bead id to next and to previous"""    
     β = PIMC.β
     L = PIMC.L
@@ -1113,7 +1348,7 @@ end
 # ============
 
 counter = 0 
-function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64)
+function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64) ::Nothing
     """Move accepted: Update stored values of V, VTV and F from their tmp values"""
     global counter
     counter += 1
@@ -1153,26 +1388,29 @@ function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64)
             error("bad VTV update")
         end
     end
-    
+    return
 end
 
 
-function init_stored(PIMC::t_pimc, beads::t_beads)
+function init_stored(PIMC::t_pimc, beads::t_beads) ::Nothing
     """Computing and storing V, VTV and F for each slice from scratch"""
-    println("Chin Action init_stored:: (re)initializing action-specific stored values")
-    @inbounds for m in 1:PIMC.M
-        bs = active_beads_on_slice(beads, m)
-        compute_V!(PIMC, beads, bs, m) # sets stored.V_tmp[m]
-        compute_F!(PIMC, beads, bs)    # sets stored.F_tmp[:, bs]
-        stored.V[m] = stored.V_tmp[m]
-        @inbounds @views stored.F[:, bs] .= stored.F_tmp[:, bs]
-        stored.VTV[m] = 2λ*sum(stored.F[:, bs].^2)
-    end
+    #println("Chin Action init_stored:: (re)initializing action-specific stored values")
+    @inbounds begin
+        for m in 1:PIMC.M
+            bs = active_beads_on_slice(beads, m)
+            compute_V!(PIMC, beads, bs, m) # sets stored.V_tmp[m]
+            compute_F!(PIMC, beads, bs)    # sets stored.F_tmp[:, bs]
+            stored.V[m] = stored.V_tmp[m]
+            @views stored.F[:, bs] .= stored.F_tmp[:, bs]
+            stored.VTV[m] = 2λ*sum(stored.F[:, bs].^2)
+        end
+    end 
     PIMC_Chin_Action.stored.set = true
+    return nothing
 end
 
 
-function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64)
+function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64) ::Float64
     """Inter-action before changes using stored V and VTV"""    
     if !PIMC_Chin_Action.stored.set
         error("Can't use U_stored before stored values are initialized in init_stored")
@@ -1184,7 +1422,7 @@ function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64)
     U
 end
 
-function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractVector{Float64}, id::Int64, act::Symbol; fake::Bool=false)
+function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractVector{Float64}, id::Int64, act::Symbol, fake::Bool=false) ::Float64
     """Inter-action after *suggested* change xold -> beads.X[:, id]"""   
     if !PIMC_Chin_Action.stored.set
         error("Can't update before stored values are initialized in init_stored")
@@ -1247,7 +1485,7 @@ function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractVector{Float64}, i
     Unew
 end
 
-function U(PIMC::t_pimc, beads::t_beads, id::Int64)
+function U(PIMC::t_pimc, beads::t_beads, id::Int64) ::Float64
     """Inter-action τ*U of bead id"""
     # SLOW
     PIMC_Common.TEST = true
@@ -1262,7 +1500,7 @@ end
 
     
 
-function U(PIMC::t_pimc, beads::t_beads, m::Int64, τ)
+function U(PIMC::t_pimc, beads::t_beads, m::Int64, τ) ::Float64
     """Inter-action τ*U of beads at slice m, variable τ to be used in AD"""
     PIMC_Common.TEST = true
     # SLOW 
@@ -1272,7 +1510,7 @@ function U(PIMC::t_pimc, beads::t_beads, m::Int64, τ)
     U
 end
         
-function U(PIMC::t_pimc, beads::t_beads)
+function U(PIMC::t_pimc, beads::t_beads) ::Float64
     """Inter-action τ*U of the whole PIMC"""
     PIMC_Common.TEST = true
     # SLOW 
