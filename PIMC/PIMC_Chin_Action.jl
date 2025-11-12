@@ -17,6 +17,7 @@ using PIMC_Systems
 using PIMC_Common
 using PIMC_Reports: report_energy
 using PIMC_Utilities: active_beads_on_slice, boson_virial_exchange_energy
+using PIMC_Lookuptable
 
 export U, K, U_stored, U_update, update_stored_slice_data
 export meas_E_th, meas_E_vir, init_action!, meas_virial_pressure
@@ -90,7 +91,11 @@ mutable struct t_stored
         new(false, zeros(M), zeros(M), zeros(dim, Nb), zeros(M), zeros(dim, Nb), zeros(M), zeros(M), zeros(dim, Nb))  
     end
 end
-stored = t_stored(1, 1) # dummy init
+const stored_ref = Ref{Union{Nothing, t_stored}}(nothing)
+
+function get_stored()    
+    return stored_ref[]
+end
 
 # Vm energy storage (to avoid both E_th and E_vir evaluating the same EVm)
 mutable struct t_estore
@@ -100,17 +105,10 @@ mutable struct t_estore
 end
 EVm_store = t_estore(0, 0, 0.0)
 
-# Exchange energy estimator storage 
-mutable struct t_exc_store
-    ipimc ::Int64
-    iworm::Int64
-    Eexc::Float64    
-end
-Eexc_store = t_exc_store(0, 0, 0.0)
 
 function init_action!(PIMC::t_pimc, beads::t_beads) ::Nothing
     """Init Chin Action"""
-    global stored    
+    #global     
     β = PIMC.β
     M = PIMC.M
     τ = 3*β/M    
@@ -139,9 +137,9 @@ function init_action!(PIMC::t_pimc, beads::t_beads) ::Nothing
         end
     end
     # we may call this init several times in optimization of chin_a1 and chin_t0
-    if length(stored.V) != M
-        stored = t_stored(M, length(beads.ids))
-    end
+    if stored_ref[] === nothing 
+        stored_ref[] = t_stored(PIMC.M, length(beads.ids)) 
+    end    
     return nothing
 end
 
@@ -206,18 +204,12 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
     L = PIMC.L
     
     Ekin = dim*N/(2*β)  # exact distinguishable N-particle kinetic energy
-    Eexc::Float64 = 0.0 
-    if bose
-        # exchange energy term
+    Eexc::Float64 = 0.0
+    if bose       
         Eexc = boson_virial_exchange_energy(PIMC, beads, links)
-        # store for pressure measurement
-        Eexc_store.ipimc = PIMC.ipimc
-        Eexc_store.iworm = PIMC.iworm
-        Eexc_store.Eexc  = Eexc
-        # 
         Ekin += Eexc
     end
-
+   
     # Virial terms are
     #   sum_m [∂β (τ Vtilde_m(x_m;τ))] + 1/(2β) sum_m (x_m - x_ref_m) ⋅ ∂x_m [τ  Vtilde_m(x_m;τ)]
     # = M/3 sum_m [∂τ (τ Vtilde_m(x_m;τ))] + 3/M 1/2 sum_m (x_m - x_ref_m) ⋅ ∂x_m Vtilde_m(x_m;τ)
@@ -283,13 +275,21 @@ function meas_E_vir(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measur
    
 end
 
-Pcoll::Float64 = 0.0
-n_Pcoll::Int64 = 0
+
+
+mutable struct t_Pcoll
+    P::Float64 
+    n::Int64
+end
+Pcoll = t_Pcoll(0.0, 0)
 
 function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement,
                               rref::Matrix{Float64} = rref_buffer,
                               gradVm::MVector{dim, Float64} = vec_buffer,
                               gradVTVx::Matrix{Float64} = gradVTVx_buffer; opt::Bool=false,
+                              Pcoll::t_Pcoll = Pcoll,
+                              dr::MVector{dim, Float64} = vec_buffer2,
+                              stored::t_stored = get_stored()
                               ) ::Float64
 
     global Pcoll, n_Pcoll
@@ -299,23 +299,21 @@ function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas
     L = PIMC.L
     β = PIMC.β
         
-    dx_long = zeros(dim)  # pre-allocate 
-    dx_short = zeros(dim)
-    r = zeros(dim)
-    dr = zeros(dim)
+
     
     faca_1 = chin_v2
     faca_2 = chin_v1    
     facb_1 = τ^2*chin_u0*(1-2*chin_a1) 
     facb_2 = τ^2*chin_u0*chin_a1
     vir_pot::Float64 = 0.0
-    vir_exc::Float64 = 0.0
     
-    # Co-moving centroid reference for all active beads
-    centroid_ref!(PIMC, beads, links)      
+    
+    # Co-moving centroid reference rref for all active beads
+    centroid_ref!(PIMC, beads, links)
     # 
     # potential term
     #
+     
     @inbounds begin
         for m in 1:M
             bs = active_beads_on_slice(beads, m)
@@ -330,55 +328,83 @@ function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas
             end        
             for i in 1:nbs
                 b = bs[i]
-                gradVx = @view stored.F[:, b]
+                gradVx = @view stored.F[:, b] # F=∇V
                 gradVm .= faca*gradVx + facb*gradVTVx[:, i]
-                vir_pot += -τ/2 * dot(view(rref, :, b), gradVm)
+                #vir_pot += dot(view(rref, :, b), gradVm)
+                distance!(view(beads.X, :, b), view(rref, :, b), L, dr) # x_m - x_m^*
+                #dr .= view(beads.X, :, b)- view(rref, :, b)
+                vir_pot += dot(dr, gradVm)  # (x_m - x_m^*)⋅∂Vm/∂x_m 
             end
         end
+        vir_pot *= -τ/(2β) # unit: energy; τ/β=3/M
     end # inbounds
     #
     # exchange term, uses boson_virial_exchange_energy from PIMC_Utilities
-    # only the factor differs by from exchange energy Eexh factor -1/β -> pressure factor 2/dΩ 
     #
-    
+    vir_exc::Float64 = 0.0
     if bose       
-        # Exc may be stored
-        if Eexc_store.ipimc == PIMC.ipimc && Eexc_store.iworm == PIMC.iworm
-            Eexc =  Eexc_store.Eexc
-        else
-            Eexc = boson_virial_exchange_energy(PIMC, beads, links)
-            Eexc_store.ipimc = PIMC.ipimc
-            Eexc_store.iworm = PIMC.iworm
-            Eexc_store.Eexc = Eexc
-        end
-        vir_exc  = -Eexc*β        
+        vir_exc = boson_virial_exchange_energy(PIMC, beads, links) # unit: energy 
     end 
 
     
-    Ω = L^dim # volume, cubic box
+    V = L^dim # volume, cubic box
     
     # virial pressure
     # P = N*k*T/Ω  | ideal gas pressure
     #    + 2/(dim*Ω) < 1/M ∑_m=1^M  ∑_m=1^M (x_{M+m}-x_m)⋅(x_{M+m-1}-x_{M+m})/(4π t_{M+m-1}τ) | exchange 
-    #                  + τ/2 ∑_m=1^M x_m^* ⋅  ∂\tilde V_m/∂x_m >
-    #  :=  N*k*T/Ω  + 2/(dim*Ω) * vir
-    #       
-    P = N/(β*Ω) + 2/(dim*Ω)  * (vir_exc + vir_pot)
-    #println("PRESSURE $P  exchange term $(2/(dim*Ω) *vir_exc)  potential term $(2/(dim*Ω) *vir_pot)")
-
-    # barostat to find P=0
-    #PIMC_Common.TEST = true
-    #Pcoll += P
-    #n_Pcoll += 1
-    #V = PIMC.L^dim*(1 - 1e-3 * Pcoll/n_Pcoll) # change volume slightly
-    #L = V^(1/dim) # new box
-    #ρ = N/V
-    #println("Virial pressure $P ; barostat sets new box side $L and new density $ρ")
-    #PIMC.L = L 
+    #                  - τ/2 ∑_m=1^M x_m^* ⋅  ∂\tilde V_m/∂x_m >
+    #  :=  N*k*T/Ω  + 2/(dim*Ω) * (vir_exc + vir_pot)
+    #
+    # Pressure unit for liquid He is K/Å^dim. Convert to bar by multiplying with 138.0649
+    #
+    P = N/(β*V) + 2/(dim*V)  * (vir_exc + vir_pot) # unit: energy /volume
+    
+    ΔP::Float64 = 0.0
+    #
+    if PIMC_Common.sys == :HeLiquid && dim==3
+        # finite-size correction
+        rcut = L/2
+        ρ = N/V 
+        ΔP = -2π/3 * ρ^2 * rcut^3 * PIMC.pair_potential(rcut)  - ρ*PIMC_Common.Vtail
+        P += ΔP
+    end
+    #
+    
     
     if opt
         return P
     end
+
+    # barostat to find equilibrium P=0
+    #=
+    if PIMC.canonical && PIMC_Common.sys == :HeLiquid
+        PIMC_Common.TEST=true
+        Pcoll.P += P
+        Pcoll.n += 1
+        #if Pcoll.n % 10 == 0
+            @printf("virial pressure terms:  %10.5f classical=%-10.5f exchange=%-10.5f potential=%-10.5f  ΔP=%-10.5f\n",
+            P,  N/(β*V), 2/(dim*V)*vir_exc, 2/(dim*V)*vir_pot, ΔP)            
+            Vold = V
+            V = Vold*(1 + 1e-3 * Pcoll.P/Pcoll.n) # Berentsen barostat, change volume Vold -> V
+            L = V^(1/dim) # new box
+            PIMC.L = L
+            ρ = N/V
+            # scale bead coordinates 
+            scale = (V/Vold)^(1/dim)
+            bs =  beads.ids[beads.active]
+            for b in bs
+                @views beads.X[:, b] .*= scale
+            end
+            # update tail correction           
+            PIMC_Common.Vtail = PIMC_Common.system.tail_correction(ρ, L, dim)
+            
+            @printf(" Barostat: P %-10.5f new box side %-10.5f new density %-10.5f\n", Pcoll.P/Pcoll.n, L, ρ)
+            Pcoll.P = 0.0
+            Pcoll.n = 0
+        #end        
+    end
+    =#
+    
     
     # Collect statistics
     add_sample!(meas.stat, P)
@@ -527,7 +553,9 @@ end
 
 
 
-function get_EVm(PIMC::t_pimc, beads::t_beads) ::Float64
+function get_EVm(PIMC::t_pimc, beads::t_beads,
+                 stored::t_stored = get_stored() 
+                 ) ::Float64
     """ ∂β [∑_m=1^M τ V_m(x_m;τ)]"""
     #
     # β = Mτ/3 for Chin Action
@@ -566,7 +594,10 @@ function get_EVm(PIMC::t_pimc, beads::t_beads) ::Float64
 end
 
 
-function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol) ::Nothing
+function compute_ΔV(PIMC::t_pimc, beads::t_beads, rsold::AbstractArray{Float64},
+                    bs::Vector{Int64}, id::Int64, act::Symbol,
+                    stored::t_stored = get_stored()
+                    ) ::Nothing
     """Computes change in potential energy ΔV to stored.ΔV[m]"""
      
     L = PIMC.L
@@ -652,7 +683,8 @@ end
 function compute_ΔF(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64}, bs::Vector{Int64},
                     id::Int64, act::Symbol,
                     vec_rsi::MVector{dim, Float64} = vec_buffer,
-                    vec_rks::MVector{dim, Float64} = vec_buffer2                    
+                    vec_rks::MVector{dim, Float64} = vec_buffer2,
+                    stored::t_stored = get_stored()
                     ) ::Nothing
     """ ΔF = ∇ ΔV for each k after change in one bead (move, remove or add) to stored.ΔF[:, bs] """
     
@@ -783,7 +815,10 @@ end
 
 
 
-function get_ΔVTV(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64}, bs::Vector{Int64}, id::Int64, act::Symbol) ::Float64
+function get_ΔVTV(PIMC::t_pimc, beads::t_beads, rsold::AbstractVector{Float64},
+                  bs::Vector{Int64}, id::Int64, act::Symbol,
+                  stored::t_stored = get_stored()
+                  ) ::Float64
     """Change in [V,[T,V]] = 2λ∑_i |F_i|^2 after one bead move; F->F_old + ΔF"""
     
     # compute stored.ΔF[:, bs]; call here to make sure ΔVTV uses new values   
@@ -817,7 +852,8 @@ end
 
 
 function compute_V!(PIMC::t_pimc,  beads::t_beads, bs::Vector{Int64}, m::Int64,
-                    vec_rki::MVector{dim, Float64} = vec_buffer
+                    vec_rki::MVector{dim, Float64} = vec_buffer,
+                    stored::t_stored = get_stored()
                     ) ::Nothing
     """ Potential energy on slice, update stored.V_tmp[m]"""
     L = PIMC.L
@@ -853,7 +889,8 @@ function compute_V!(PIMC::t_pimc,  beads::t_beads, bs::Vector{Int64}, m::Int64,
 end
 
 function compute_F!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
-                    vec_rki::MVector{dim, Float64} = vec_buffer
+                    vec_rki::MVector{dim, Float64} = vec_buffer,
+                    stored::t_stored=get_stored()
                     ) ::Nothing
     """ Forces F=∇V on beads bs (active beads on the same slice), update stored.F_tmp[:, bs]"""
     L = PIMC.L
@@ -1046,6 +1083,7 @@ rref_store = t_rref_store(0, 0, Matrix{Float64}(undef, 0, 0))
 const rref_buffer = Matrix{Float64}(undef, dim, N_slice_max*M_max) # overkill 
 
 # Co-moving centroid reference for all active beads
+# NB: updates rref_buffer 
 function centroid_ref!(PIMC::t_pimc, beads::t_beads, links::t_links,                      
                       dr::MVector{dim, Float64} = vec_buffer,
                       rup::MVector{dim, Float64} = vec_buffer2,
@@ -1152,11 +1190,12 @@ const vec_buffer_b =  MVector{dim, Float64}(undef)
 const ∇k∇nV_buffer =  MMatrix{dim, dim, Float64}(undef)
 
 function compute_gradVTV!(PIMC::t_pimc, beads::t_beads, bs::Vector{Int64},
-                              gradVTVx::Matrix{Float64},
-                              vecr::MVector{dim, Float64} = vec_buffer_a,
-                              hatr::MVector{dim, Float64} = vec_buffer_b,
-                              ∇k∇nV::MMatrix{dim, dim, Float64} = ∇k∇nV_buffer       
-                              ) ::Nothing
+                          gradVTVx::Matrix{Float64},
+                          vecr::MVector{dim, Float64} = vec_buffer_a,
+                          hatr::MVector{dim, Float64} = vec_buffer_b,
+                          ∇k∇nV::MMatrix{dim, dim, Float64} = ∇k∇nV_buffer,
+                          stored::t_stored = get_stored()                          
+                          ) ::Nothing
     
     V_ext = PIMC.confinement_potential
     ∇V_ext = PIMC.grad_confinement_potential
@@ -1348,7 +1387,9 @@ end
 # ============
 
 counter = 0 
-function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64) ::Nothing
+function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64,
+                                  stored::t_stored = get_stored()
+                                  ) ::Nothing
     """Move accepted: Update stored values of V, VTV and F from their tmp values"""
     global counter
     counter += 1
@@ -1392,7 +1433,9 @@ function update_stored_slice_data(PIMC::t_pimc, beads::t_beads, id::Int64) ::Not
 end
 
 
-function init_stored(PIMC::t_pimc, beads::t_beads) ::Nothing
+function init_stored(PIMC::t_pimc, beads::t_beads,
+                     stored::t_stored=get_stored()
+                     ) ::Nothing
     """Computing and storing V, VTV and F for each slice from scratch"""
     #println("Chin Action init_stored:: (re)initializing action-specific stored values")
     @inbounds begin
@@ -1405,14 +1448,16 @@ function init_stored(PIMC::t_pimc, beads::t_beads) ::Nothing
             stored.VTV[m] = 2λ*sum(stored.F[:, bs].^2)
         end
     end 
-    PIMC_Chin_Action.stored.set = true
+    stored.set = true
     return nothing
 end
 
 
-function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64) ::Float64
+function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64,
+                  stored::t_stored=get_stored()
+                  ) ::Float64
     """Inter-action before changes using stored V and VTV"""    
-    if !PIMC_Chin_Action.stored.set
+    if !stored.set
         error("Can't use U_stored before stored values are initialized in init_stored")
     end
     m = beads.ts[id]
@@ -1422,9 +1467,12 @@ function U_stored(PIMC::t_pimc, beads::t_beads, id::Int64) ::Float64
     U
 end
 
-function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractVector{Float64}, id::Int64, act::Symbol, fake::Bool=false) ::Float64
+function U_update(PIMC::t_pimc, beads::t_beads, xold::AbstractVector{Float64}, id::Int64, act::Symbol,                  
+                  fake::Bool=false,
+                  stored::t_stored=get_stored()
+                  ) ::Float64
     """Inter-action after *suggested* change xold -> beads.X[:, id]"""   
-    if !PIMC_Chin_Action.stored.set
+    if !stored.set
         error("Can't update before stored values are initialized in init_stored")
     end
     m = beads.ts[id]
