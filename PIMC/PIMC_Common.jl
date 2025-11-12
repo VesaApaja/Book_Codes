@@ -32,7 +32,7 @@ opt_chin = false # EXPERIMENTAL force Chin a1 and t0 parameter optimization
 # ==========================
 # CHOOSE SYSTEM AND ACTION
 
-case = 216
+case = 264
 
 if case==1
     sys = :HarmonicOscillator
@@ -57,7 +57,7 @@ if case==216
     sys = :HeLiquid
     restart = false
     if restart
-        restart_with_data = true # continue collecting data or not
+        restart_with_data = false # continue collecting data or not
     end
     const N = 16
     const bose = true 
@@ -66,16 +66,16 @@ if case==216
     const λ = 6.0612686
     const τ = 0.01
     const action = ChinAction
-    worm_limit = 30.0
-    Ntherm = 10000
+    worm_limit = 20.0
+    Ntherm = 1000
     worm_C = 0.1
-    optimize_worm_params = true
+    optimize_worm_params = false
 end
 
 
 if case==264
     sys = :HeLiquid
-    restart = false
+    restart = true
     if restart
         restart_with_data = true # continue collecting data or not
     end
@@ -86,12 +86,11 @@ if case==264
     const λ = 6.0612686
     const τ = 0.01
     const action = ChinAction #PrimitiveAction 
-    worm_limit = 30.0
-    Ntherm = 1000
+    worm_limit = 20.0
+    Ntherm = 10000
     worm_C = 0.1
     optimize_worm_params = true
 end
-
 
 worm_K = 30 #  a better value given in PIMC_main based on M, optimized if optimize_worm_params = true
 const N_slice_max = N+5 # extra space per slice
