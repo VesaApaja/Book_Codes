@@ -411,7 +411,7 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
 
                
 
-        if PIMC.ipimc%10000==0
+        if PIMC.ipimc%10000==0 && PIMC_Common.TEST == false
             write_restart(PIMC, beads, links)            
             #GC.gc() # manual garbage collection
         end
