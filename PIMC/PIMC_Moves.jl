@@ -479,7 +479,7 @@ function worm_move!(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::
             if open_acceptance > 30.0
                 PIMC_Common.worm_K += 1
             end
-            PIMC_Common.worm_K = clamp(PIMC_Common.worm_K, ceil(Int64, 0.2 * PIMC.M), ceil(Int64, 0.3 * PIMC.M))
+            PIMC_Common.worm_K = clamp(PIMC_Common.worm_K, ceil(Int64, 0.1* PIMC.M), ceil(Int64, 0.3 * PIMC.M))
             @printf("open_acceptance  = %-8.2f  worm_K = %-15d\n", open_acceptance, PIMC_Common.worm_K)
         end    
     end
