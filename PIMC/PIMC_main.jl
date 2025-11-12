@@ -300,12 +300,12 @@ function main()
         println("="^80)
     end
 
-
+    #
     # Thermalization
+    # ==============
     run_pimc(PIMC, beads, links, beads_backup, links_backup, Ntherm)
     PIMC_Common.Ntherm = 0 # signals "thermalization done" to subsequent calls to run_pimc
-    
-    
+    #
     # Estimate τ_int from a short run
     # ===============================
     # add_measurement!() : 
@@ -340,7 +340,8 @@ function main()
             
     println("="^80)
     #exit()
-    
+
+    #
     # Measurements:
     # =============
     
