@@ -32,7 +32,7 @@ function grad2_potential(r::AbstractArray{T}) where T<:Real
     return size(r,1) 
 end
 
-function E_exact(β::Float64, dim::Int64, N::Int64)
+function E_exact(β::Float64, dim::Int64, N::Int64, λ::Float64, L::Float64)
     """<E> for distinquishable noninteracting boltzmannons per particle per dimension"""
     # E/N per dimension is ħω/2 * 1/tanh(β*ħω/2) in units ħω=1
     return 1/(2*tanh(β/2)) * dim
@@ -66,13 +66,11 @@ function E_exact_bosons(β::Float64, dim::Int64, N::Int64)
     end
     # Yet another way
     #if N==2
-        # from Z2 = 1/2*(Z1(β)^2 + Z1(2β))
-        #E2 = 1 + exp(-β)/(1-exp(-β)) + 2*exp(-2β)/(1-exp(-2β))
-        #@show E2/2
+    # from Z2 = 1/2*(Z1(β)^2 + Z1(2β))
+    #E2 = 1 + exp(-β)/(1-exp(-β)) + 2*exp(-2β)/(1-exp(-2β))
+    #@show E2/2
     #end
 
-    
-    
     return E_exact_bose 
 end
 
@@ -96,14 +94,14 @@ const exact = t_exact(0.0, 0.0)
 
 
 
-function Z1s(β, dim::Int64, N::Int64)
+function Z1s(β, dim::Int64, N::Int64, λ::Float64, L::Float64)
     """Single-particle Z_1 for β, 2β, ..., Nβ in array Zs """
       
     if N>5
         println("Z1s won't work for N>5")
         return
     end
-    L = 10.0 * N^(1/dim)   # L chosen in PIMC_worm
+    ## TEST L = 10.0 * N^(1/dim)   # L chosen in PIMC_worm
     
     Zs  = zeros(eltype(β), N) # may be dual numbers for ForwardDiff
 
@@ -144,7 +142,7 @@ function Z1s(β, dim::Int64, N::Int64)
 end
 
 
-function E_check(β::Float64, dim::Int64, N::Int64)
+function E_check(β::Float64, dim::Int64, N::Int64, λ::Float64, L::Float64)
     
     L = 10.0 * N^(1/dim)   # L chosen in PIMC_worm
     
@@ -169,22 +167,22 @@ end
 
 
 function ZN(β, dim::Int64, N::Int64) 
-    Z =  Z1s(β, dim, N)
+    Z =  Z1s(β, dim, N, λ, L)
     Z1 = Z[1]^N
 end
 
 
-function E_exact(β, dim::Int64, N::Int64)
+function E_exact(β, dim::Int64, N::Int64, λ::Float64, L::Float64)
     if dim==3 && N>5    
         return 3/(2*β) # E=3/2*N*kB*T 
     end
     if !isapprox(exact.E, 0.0)        
         return exact.E
     end
-    Zβ(x) = ZN(x, dim, N)
+    Zβ(x) = ZN(x, dim, N, λ, L)
     E = -ForwardDiff.derivative(Zβ, β) / Zβ(β)
     println("Dist: $(E/N)")
-    EE = E_check(β, dim, N)
+    EE = E_check(β, dim, N, λ, L)
     println("Dist: $(EE/N) computed for checking")
     exact.E = E/N
     E/N
@@ -211,7 +209,7 @@ function E_exact_bosons(β, dim::Int64, N::Int64)
     end
     if dim==3 && N>5    
         println("Linear interpolation of Grand Canonical E(T) from file Enoninteracting_GC.dat")
-        dat = readdlm("Enoninteracting_GC.dat", comments=true, comment_char='#')
+        dat = readdlm("Nonint/Enoninteracting_GC.dat", comments=true, comment_char='#')
         Ts = dat[:, 1]  
         Es = dat[:, 2]
         # linear interpolation to find E(T)
@@ -226,19 +224,17 @@ function E_exact_bosons(β, dim::Int64, N::Int64)
         Zβ(x) = ZN_bose(x, dim, N)
         E = -ForwardDiff.derivative(Zβ, β) / Zβ(β)
         println("Bose: $(E/N)")
-        exact.E_bose = E/N
+        exact.E_bose = E
     end
-    E/N    
+    exact.E_bose
 end
 
-end
+end # module
 # -----------------------------------------------------------------
 
 module HeLiquid
-@inline norm(x) = sqrt(sum(abs2,x))
 
 const name = "He_liquid"
-
 
 #  Aziz, Phys. Rev. Lett. 74, 1586 (1995)
 const epsil = 10.9560000
@@ -253,7 +249,7 @@ const c10   = 0.17151143
 
 
 
-function E_exact(β::Float64, dim::Int64, N::Int64)
+function E_exact(β::Float64, dim::Int64, N::Int64, λ::Float64, L::Float64)
     return 0.0
 end
 function E_exact_bosons(β::Float64, dim::Int64, N::Int64)
@@ -261,22 +257,45 @@ function E_exact_bosons(β::Float64, dim::Int64, N::Int64)
 end
 
 
-
-function potential(r::T) where T<:Real # liberal argument type For AD 
+ 
+@inline function potential(r::Float64) 
     """Aziz He-He potential; Unit K"""
-    x = r/rm    
-    if x < D
-        fx = exp(-(D/x-1)^2)
-    else
-        fx = one(T)  # 1, but type may be Dual
-    end 
+    x::Float64 = r/rm
+    fx::Float64 = x < D ? exp(-(D/x-1)^2) : 1.0    
+    V::Float64 = epsil*(aa*exp(-alpha*x+beta*x^2)-fx*(c6/x^6 + c8/x^8 + c10/x^10))    
+end
+
+# AD version
+@inline function potential(r::T) where T<:Real # liberal argument type for AD 
+    """Aziz He-He potential; Unit K"""
+    x = r/rm
+    fx = x < D ? exp(-(D/x-1)^2) : one(T)    # causes type instability, hence separate Float64 version
     V = epsil*(aa*exp(-alpha*x+beta*x^2)-fx*(c6/x^6 + c8/x^8 + c10/x^10))    
 end
 
 
 
-function der_potential(r::T) where T<:Real
+@inline function der_potential(r::Float64) 
     """Derivative V'(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm"""        
+    x::Float64   = r/rm
+    x2::Float64  = x^2
+    x6::Float64  = x2^3
+    x8::Float64  = x2^4
+    x10::Float64 = x2^5
+    F::Float64   = 1.0
+    dV::Float64  = 0.0    
+    if x < D
+        xD = D/x - 1.0
+        F = exp(-(xD^2))
+        dV = -2 * xD * D/x2* F *(c6/x6 + c8/x8 + c10/x10)
+    end
+    dV += aa*(-alpha + 2*beta * x) * exp(-alpha*x+beta*x2) + F*(6*c6/x6+8*c8/x8+10*c10/x10)/x
+    dV *= epsil/rm
+    return dV
+end
+
+@inline function der_potential(r::T) where T<:Real    
+    """Derivative V'(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm"""
     x   = r/rm
     x2  = x^2
     x6  = x2^3
@@ -294,8 +313,30 @@ function der_potential(r::T) where T<:Real
     return dV
 end
 
+
+
 # tested with AD
-function der2_potential(r::T) where T<:Real
+@inline function der2_potential(r::Float64) 
+    """Derivative V''(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm^2"""       
+    x::Float64   = r/rm
+    F::Float64   = 1.0
+    dF::Float64  = 0.0
+    ddF::Float64 = 0.0
+    xD::Float64  = D/x - 1.0
+    if x < D  
+        F = exp(-xD^2)
+        dF = 2*D*xD*F/x^2
+        ddF = 4*D^2*xD^2*F/x^4 - 2*D^2*F/x^4 - 4*D*xD*F/x^3
+    end 
+    expo::Float64 = exp(-alpha*x + beta*x^2)
+    ddV::Float64 = epsil/rm^2*(2*aa*beta*expo + aa*expo*(-alpha + 2*beta*x)^2 
+                      + (-110*c10/x^12 - 42*c6/x^8 - 72*c8/x^10)*F 
+                      + 2*(10*c10/x^11 + 6*c6/x^7 + 8*c8/x^9)*dF 
+                      + (-c10/x^10 - c6/x^6 - c8/x^8)*ddF)
+    return ddV
+end
+
+@inline function der2_potential(r::T) where T<:Real
     """Derivative V''(r) of Aziz He-He potential (discontinuous); Unit K/Ånsgröm^2"""       
     x   = r/rm
     F   = one(T)
@@ -335,73 +376,30 @@ end
     end
 end
 
-@inline function der_Vcutoff(r::T) where T<:Real
-    """Derivative of the pair-potential cutoff"""
-    rc = rcut[]
-    if r < rc
-        x = r / rc
-        return (-30x^2 + 60x^3 - 30x^4) / rc
-    else
-        return 0.0
+
+function tail_correction(ρ::Float64, rc::Float64, L::Float64, dim::Int64, pbc::Bool) ::Float64
+    """Potential energy tail correction, approximating g(r)=1 for r>rc"""
+    
+    if dim==1
+        error("tail_correction not implemented for dim=1")
     end
-end
-
-@inline function potential_with_cutoff(r::T)  where T<:Real
-    return potential(r) * Vcutoff(r)
-end
-@inline function der_potential_with_cutoff(r::T)  where T<:Real
-    return der_potential(r) * Vcutoff(r) + potential(r) * der_Vcutoff(r)  
-end
-
-#=
-#
-# Closures to define cut off potential and it's derivative
-# May be called in PIMC_main in function init_He_liquid
-
-function make_potential(rcut)
-    return r -> potential(r) * Vcutoff(r, rcut)
-end
-
-function make_der_potential(rcut)
-    return r -> begin
-        V′ = der_potential(r) 
-        V = potential(r)
-        return V′ * Vcutoff(r, rcut) + V * der_Vcutoff(r, rcut)
-    end
-end
-=#
-
-
-function tail_correction(ρ::Float64, L::Float64, dim::Int64)
-    """Potential energy tail correction, approximating g(r)=1 for r>L/2"""
-    # Simpson rule integration (didn't bother to use a Julia package for this task)
-    n = 10001 # keep odd 
-    rcut = L/2
-    rstep = 50.0/n # far enough so that the potential is approx zero
+    if pbc && rc>L/2
+        error("rc > L/2 is no good for pbc") 
+    end    
+    
+    n = 10001 # keep odd
     ws = [1; repeat([4,2], div(n-3,2)); [4, 1]] # Simpson rule weights 14242...4241
+    rstep = 50.0/n # far enough so that the potential is approx zero
     Vtail = 0.0
-    if dim>1
-        for i = 1:n
-            r = rcut + (i-1)*rstep 
-            Vtail += ws[i]*r^(dim-1)*potential(r)
-        end        
-        Vtail *= (dim-1)*π*ρ *rstep/3 
-    end 
+    # Simpson rule integration 
+    for i = 1:n
+        r = rc + (i-1)*rstep 
+        Vtail += ws[i]*r^(dim-1)*potential(r)
+    end        
+    Vtail *= (dim-1)*π*ρ *rstep/3 
     return Vtail
-  end 
-
 end
 
-
-# ==============================================================================
-# unused
-
-function lennard_jones_potential(r::AbstractArray{Float64}, σ::Float64=1.0, ϵ::Float64=1.0)
-    """Lennard-Jones interaction potential"""
-    if r == 0
-        return 0.0
-    end
-    s6 = (σ/r)^6
-    return 4 * ϵ * (s6^2 - s6)
 end
 end
+

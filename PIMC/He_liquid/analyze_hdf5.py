@@ -2,6 +2,8 @@ import h5py
 import numpy as np
 import os
 import matplotlib.pyplot as plt
+from scipy.interpolate import PchipInterpolator
+from scipy.optimize import curve_fit
 
 svensson = []
 res = []
@@ -17,6 +19,21 @@ with open('./g.svensson.dat','r') as f:
 
 r_svensson = [x[0] for x in svensson]
 g_svensson = [x[1] for x in svensson]
+
+svensson_Sk = []
+res = []
+with open('./Sk.svensson.dat','r') as f:
+    lines = f.readlines()
+    res.append(lines)
+    for d in res:
+        for p in d:
+            if "#" in p:
+                continue
+            s = p.split()
+            svensson_Sk.append([float(s[0]),float(s[1])])
+
+k_svensson = [x[0] for x in svensson_Sk]
+Sk_svensson = [x[1] for x in svensson_Sk]
 
 # He-liquid measured rhos
 meas_file = './rhos_per_rho_donnelly.dat'
@@ -36,6 +53,11 @@ for line in lines:
         pass
 
 T_meas,rhos_meas = zip(*meas)
+
+# measured density
+rho_measured = np.loadtxt('He_liquid_measured_density.dat')
+    
+
 
 
 #
@@ -136,13 +158,36 @@ def load_hdf5(filename):
         except:
             pass
         
-        # obdm rho_1(r)
+        # S(k)
         try:
+            data_dict["Sks"] = f["static_structure_factor/Sk"][:]
+            data_dict["ks"] = f["static_structure_factor/k"][:]
+        except:
+            pass
+
+        # virial pressure
+        try:
+            data_dict["P"] = f["virial_pressure/Pressure"][()]
+            data_dict["P_std"] = f["virial_pressure/std"][()]
+        except:
+            pass
+        
+        # obdm rho_1(r) (skip, messy plot)
+        try:
+            1/0
             data_dict["obdms"] = f["obdm/obdm"][:]
             data_dict["obdms_std"] = f["obdm/std"][:]
             data_dict["obdm_rs"] = f["obdm/r"][:]            
         except:
             pass
+        
+        # density (skip)
+        try:
+            1/0
+            data_dict["rho"] = f["metadata/rho"][()]
+        except:
+            pass
+        
 
         ok = True
         if len(data_dict)==0:
@@ -158,8 +203,8 @@ def load_hdf5(filename):
         data_dict["N"] = f["metadata/N"][()]
         data_dict["tau"] = f["metadata/tau"][()]
         data_dict["action"] = f["metadata/action"][()].decode()
-        print('hdf5 ',filename)
-        print(f"Result Date: {data_dict["date"]}")
+        print('reading hdf5 file:',filename)
+        #print(f"Result Date: {data_dict["date"]}")
     if not ok:
         print("HFD5 read failed for file",filename)
         return False
@@ -189,17 +234,22 @@ def readdat(ids):
 def plot_E(Edata, col, action_str, N, first):
     plt.figure(1)
     if first:
-        plt.clf()
-    #plt.plot(T_bon,E_bon,'bo-',markersize=4, label='Boninsegni')
-    #plt.plot(T_cp,E_cp,'rx',markersize=4, label='Ceperley-Pollock')
-    if first:
+        #plt.plot(T_bon,E_bon,'bo-',markersize=4, label='Boninsegni')
+        #plt.plot(T_cp,E_cp,'rx',markersize=4, label='Ceperley-Pollock')
         plt.plot(T_exp,E_exp,'b-', label='Experiment')
     
     lab="Virial estimator"+" N="+str(N)
     Edata.sort()
-    Ts = [d[0] for d in Edata]
-    Es = [d[1] for d in Edata]
-    stds = [d[2] for d in Edata]
+    Ts = np.array([d[0] for d in Edata])
+    Es = np.array([d[1] for d in Edata])
+    stds = np.array([d[2] for d in Edata])
+    # skip N=16 T<1.0, thermal wavelength ~ box length L
+    if N==16:
+        mask = Ts > 0.9
+        Ts = Ts[mask]
+        Es = Es[mask]
+        stds = stds[mask]
+    
     plt.errorbar(Ts,Es,stds,marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
 
     plt.xlabel("T [K]")
@@ -215,16 +265,14 @@ def plot_g(gdata, col, action_str, N, first):
     
     plt.figure(2)
     if first:
-        plt.clf()
-    if first:
-        plt.plot(r_svensson, g_svensson,'bo', label="Exp. Neutron diffraction at T=1.0 K", markersize=3)
+        plt.plot(r_svensson, g_svensson,'bo', label="Exp. Neutron diffraction at T=1.0 K (Svensson et al.)", markersize=3)
 
     for dat in gdata:
         T, tau, rs, gs = dat
         if T != 1.0:
             continue
         tauscr = f'{tau:.3f}'
-        Tscr = f'{T:.3f}'
+        Tscr = f'{T:.1f}'
         plt.plot(rs, gs, color=col, label = "T = "+Tscr+" N="+str(N))
     plt.xlabel("r [Å]")
     plt.ylabel("g(r)")
@@ -234,11 +282,11 @@ def plot_g(gdata, col, action_str, N, first):
     plt.legend()    
     plt.pause(0.001)
     plt.draw()
+
+   
     
 def plot_rhos(rhosdata, col, action_str, N, first):
     plt.figure(3)
-    if first:
-        plt.clf()
     if first:
         plt.plot(T_meas,rhos_meas,'b-',label=r'Exp. He$^4$ superfluid fraction')
     lab = " N="+str(N)
@@ -260,11 +308,10 @@ def plot_rhos(rhosdata, col, action_str, N, first):
     plt.draw()
 
 
+
   
 def plot_V(Vdata, col, action_str, N, first):
     plt.figure(4)                               
-    if first:
-        plt.clf()
     if first:
         plt.plot(T_bon,V_bon,'bo-',markersize=4, label='PIMC: Boninsegni et al.')
         plt.plot(T_cp,V_cp,'rx-',markersize=4, label='PIMC: Ceperley & Pollock')
@@ -288,10 +335,8 @@ def plot_V(Vdata, col, action_str, N, first):
 
 def plot_obdm(data, col, N, first):    
     # Plot obdm(r) a.k.a. rho_1(r)
-    
+    return #skip
     plt.figure(5)
-    if first:
-        plt.clf()   
     
     data.sort()
     for dat in data:
@@ -304,34 +349,42 @@ def plot_obdm(data, col, N, first):
     plt.xlabel("r")
     plt.ylabel(r"$\rho_1(r)$")
     plt.title("One-body density matrix (obdm)")
-    #plt.ylim([0,1.1])
+    plt.ylim([0,1.1])
     plt.tight_layout()
-    plt.legend()    
+    #plt.legend()    
     plt.pause(0.001)
     plt.draw()
 
     
 def plot_n0(data, col, action_str, N, first):
     plt.figure(6)
-    if first:
-        plt.clf()
     lab = " N="+str(N)
     data.sort()
     Ts = np.array([d[0] for d in data])
-    n0s = [d[1] for d in data]
-    stds = [d[2] for d in data]
-    spline = PchipInterpolator(Ts, n0s)
-    Tsmooth =  np.linspace(Ts.min(), Ts.max(), 300)
-    n0ssmooth = spline(Tsmooth)
-    plt.plot(Tsmooth, n0ssmooth, '-', color=col)
-    plt.errorbar(Ts,n0s,stds, marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
+    n0s = np.array([d[1] for d in data])
+    stds = np.array([d[2] for d in data])
+    # skip N>64 data below 1.9 K (not converged)
+    if N>64:
+        mask = Ts >= 1.9
+        Ts = Ts[mask]
+        n0s = n0s[mask]
+        stds = stds[mask]
+    try:
+        spline = PchipInterpolator(Ts, n0s)
+        Tsmooth =  np.linspace(Ts.min(), Ts.max(), 300)
+        n0ssmooth = spline(Tsmooth)
+        plt.plot(Tsmooth, n0ssmooth, '-', color=col)
+    except:
+        print('plot_n0: cannot spline, too few points')
+        pass
+    plt.errorbar(Ts, n0s, stds, marker='o',color=col, ls='none', label=lab, markersize=4, capsize=3)
 
-    T_GCs =  np.linspace(0.0, 1.0, 100)
-    n0_GCs = 1- T_GCs**(3/2)  # n0 = 1-(T/Tc)^3/2 , Tc = 1.0
-    plt.plot(T_GCs, n0_GCs, '-', color='blue', label='GC')
+    #T_GCs =  np.linspace(0.0, 1.0, 100)
+    #n0_GCs = 1- T_GCs**(3/2)  # n0 = 1-(T/Tc)^3/2 , Tc = 1.0
+    #plt.plot(T_GCs, n0_GCs, '-', color='blue', label='GC')
     
     plt.xlim([0.0,3])
-    plt.ylim([-0.1,1.2])
+    #plt.ylim([-0.1,1.2])
     plt.title("Condensate fraction")
     plt.hlines(0,0,5,linestyles='dashed')
     plt.xlabel("T [K]")
@@ -340,11 +393,73 @@ def plot_n0(data, col, action_str, N, first):
     plt.pause(0.001)
     plt.draw() 
 
+def plot_P(data, col, action_str, N, first):
+    plt.figure(7)
+    lab = " N="+str(N)
+    data.sort()
+    Ts = np.array([d[0] for d in data])
+    Ps = np.array([d[1] for d in data])
+    stds = np.array([d[2] for d in data])
+    plt.errorbar(Ts, Ps, stds, marker='o',color=col, ls='none', label=lab, markersize=4, capsize=3)
+    plt.xlabel("T [K]")
+    plt.ylabel(r"$P~ [K/\AA^3]$")
+    plt.legend()
+    plt.pause(0.001)
+    plt.draw()
+
+def plot_rho(data, col, action_str, N, first):
+    plt.figure(8)
+    if first:
+        plt.plot(rho_measured[:,0], rho_measured[:,1] ,'b-',label=r'Exp. He$^4$ density at SVP')
+    lab = " N="+str(N)
+    if len(data)>0:
+        data.sort()
+        Ts = [d[0] for d in data]
+        rhos = [d[1] for d in data]
+        plt.plot(Ts,rhos, marker='o',color=col,ls='none',label=lab,markersize=4)
+
+
+    plt.title("Density")
+    plt.xlabel("T [K]")
+    plt.ylabel(r"$\rho  [1/\AA^3]$")
+    plt.legend()
+    plt.pause(0.001)
+    plt.draw()
+
+    
+def plot_Sk(Skdata, col, action_str, N, first):    
+    # Plot S(kr)
+    if N>64:
+        return # not converged
+    plt.figure(9)
+    if first:
+        plt.plot(k_svensson, Sk_svensson,'bo', label="Exp. Neutron diffraction at T=1.0 K (Svensson et al.)", markersize=3)
+
+    for dat in Skdata:
+        T, tau, ks, Sks = dat
+        if T != 1.0:
+            continue
+        tauscr = f'{tau:.3f}'
+        Tscr = f'{T:.1f}'
+        plt.plot(ks, Sks,'x', color=col, label = "T = "+Tscr+" N="+str(N), markersize=4)
+    plt.xlabel("k [Å^{-1}]")
+    plt.ylabel("S(k)")
+    plt.title("Static Structure Factor")
+    plt.ylim([0,1.5])
+    plt.xlim([0,6.0])
+    plt.tight_layout()
+    plt.legend()    
+    plt.pause(0.001)
+    plt.draw() 
+# ============================================
+
+    
 def plot():
     
 
     #example filename = "results.He_liquid_chin_T4.0_tau0.1_M9_N16_bose.dat.h5"
-    idlist  = [ ['tau0.01','16','olive'], ['tau0.01','64','purple']]
+    idlist  = [ ['tau0.01','16','olive'], ['tau0.01','64','purple'],  ['tau0.01','128','magenta']]
+    #idlist  = [['tau0.01','64','purple']]
 
 
     
@@ -359,45 +474,94 @@ def plot():
         Edata = []
         Vdata = []
         gdata = []
+        Skdata = []
         obdmdata = []
         n0data = []
         Vdata = []
         rhosdata = []
+        Pdata = []
+        rhodata = []
         for r in res: # r is a dictionary
             if "E_vir" in r.keys():
                 d = [r["T"] , r["E_vir"], r["std_E_vir"]]
                 Edata.append(d)
-                print('Energies: ',d)  # virial estimator
+
+            if "E_vir" in r.keys():
+                d = [r["T"] , r["V"], r["std_V"]]
+                Vdata.append(d)
 
             if "gs" in r.keys():
                 d = [r["T"], r["tau"], r["rs"], r["gs"]]
                 gdata.append(d)
                 
+            if "Sks" in r.keys():
+                d = [r["T"], r["tau"], r["ks"], r["Sks"]]
+                Skdata.append(d)
+                
             if "rho_s" in r.keys():
                 d = [r["T"], r["rho_s"], r["std_rho_s"]]
                 rhosdata.append(d)
+
+            if "P" in r.keys():
+                d = [r["T"], r["P"], r["P_std"]]
+                Pdata.append(d) 
+
+            if "rho" in r.keys():
+                d = [r["T"], r["rho"]]
+                rhodata.append(d)
                 
             action = r["action"]
             N = r["N"]
-            
+
             if "obdms" in r.keys():
-                norm = r["obdms"][0]
-                r["obdms"] /= norm
-                r["obdms_std"] /= norm
+
+                # condensate fraction:
+                # fitted tail
+                # tail of obdm =  n0 + Aexp(-r/xi) 
+                def obdm_model(r, n0, A, xi):
+                    return n0 + A * np.exp(-r / xi)
                 
-                # just tail: 
-                n0 = r["obdms"][-1]
-                n0_std = r["obdms_std"][-1]
+                T = r["T"]
+                # fit model to tail
+                try:
+                    p0 = [0.01, 4., 0.7]  # initial guess 
+                    r_tail =  r["obdm_rs"][-10:]
+                    obdm_tail = r["obdms"][-10:]
+                    p, cov = curve_fit(obdm_model, r_tail, obdm_tail, p0)
+                    n0, A, xi = p
+                    p_errors = np.sqrt(np.diag(cov))
+                    n0_std = p_errors[0]
+                    if n0<0.0 or n0_std>n0:
+                        1/0 # unreliable fit
+                        #if n0<0.0:
+                        #n0 = 0.0
+                    print(f"T={T:.4f} condensate fraction n₀ ≈ {n0:.4f} **fitted obdm tail**")
+                    d = [r["T"], n0, n0_std]
+                    n0data.append(d)
                 
-                d = [r["T"], r["obdm_rs"], r["obdms"], r["obdms_std"]]
-                obdmdata.append(d)
-                d = [r["T"], n0, n0_std]
-                n0data.append(d)
+                except:
+                    nn = 5
+                    n0 = sum(r["obdms"][-nn:])/len(r["obdms"][-nn:])
+                    n0_std = sum(r["obdms_std"][-nn:])/len(r["obdms_std"][-nn:])
+                    print(r["obdms"][-nn:])
+                    print(f"T={T:.4f} condensate fraction n₀ ≈ {n0:.4f} **averaged obdm tail**")
+                    d = [r["T"], r["obdm_rs"], r["obdms"], r["obdms_std"]]
+                    obdmdata.append(d)
+                    d = [r["T"], n0, n0_std]
+                    n0data.append(d)
+
             
             ok = True
         if not ok:
             print("no data to plot")
-    
+        #if first:
+        #    for i in range(1,10):
+        #        plt.figure(i)
+        #       plt.clf()
+            
+        
+        
+            
         if action=="chin":
             action_str = "Chin Action" 
         else:
@@ -410,12 +574,24 @@ def plot():
             # sort gdata to increasing T
             gdata.sort()
             plot_g(gdata, col, action_str, N, first)
+        if len(Skdata)>0:
+            # sort Skdata to increasing T
+            Skdata.sort()
+            plot_Sk(Skdata, col, action_str, N, first)
         if len(rhosdata)>0:
             plot_rhos(rhosdata, col, action_str, N, first)
+        # skip pressure plot
+        #if len(Pdata)>0:
+        #    plot_P(Pdata, col, action_str, N, first)
+            
         if len(obdmdata)>0:
             plot_obdm(obdmdata, col, N, first)
         if len(n0data)>0:
             plot_n0(n0data, col, action_str, N, first)
+            
+        # skip density plot
+        #plot_rho(rhodata, col, action_str, N, first)
+            
         first = False
 
 def onclick(event):

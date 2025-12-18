@@ -23,7 +23,7 @@ end
 
 
 function report_acceptance(PIMC::t_pimc)
-    println("Acceptances:")
+    println("Move Acceptances %:")
     for move in PIMC.moves
         if move.name==:worm_move
             @printf("%15s %8.3f %s\n", move.name, PIMC.acceptance[move], " (worm_open)")
@@ -41,31 +41,44 @@ function pimc_report(PIMC::t_pimc, io::IO=stdout)
     # parameter report
     if PIMC_Common.TEST
         println(io, "# "*"="^80)
-        println(io, "# TEST CODE ! (Somewhere there's a PIMC_Common.TEST = true that marks this a test version)")
+        println(io, "# TEST CODE ! (Somewhere there's a PIMC_Common.TEST = true)")
         println(io, "# "*"="^80)
     end
-    println(io, "# "*"="^80)
-    println(io, "# PIMC PARAMETERS")
-    println(io, "# ---------------")
-    
-    myprintf("sys", PIMC_Common.sys, io)
-    myprintf("bose", bose, io)
-    myprintf("pbc", pbc, io)
-    myprintf("T", 1/PIMC.β, io)
-    myprintf("dim", dim, io)
-    myprintf("λ", λ, io)
-    myprintf("ρ", N/PIMC.L^dim, io)
-        
-    not_show = ["potential","measurements","moves","reports","ipimc","iworm","head","tail","acceptance"]
-    for field in fieldnames(typeof(PIMC))
-        any(occursin.(not_show, String(field))) && continue
-        value = getproperty(PIMC, field)                
-        myprintf(field, value, io)
+    if PIMC_Common.use_loop_centroid
+        println(io, "# "*"="^80)
+        println(io, "# LOOP CENTROID used in PIMC_Utilities centroid_ref!()")
+        println(io, "# "*"="^80)
     end
+    
+    println(io, "# "*"="^80)
+    myprintf("sys", PIMC_Common.sys, io)
+    println(io, "# "*"-"^80)
+    #myprintf("bose", bose, io)
+    #myprintf("pbc", pbc, io)
+    myprintf("T", 1/PIMC.β, io)
+    myprintf("M", PIMC.M, io)
+    myprintf("L", PIMC.L, io)
+    myprintf("rc", PIMC.rc, io)
+    if action == ChinAction
+        myprintf("chin_a1", PIMC.chin_a1, io)
+        myprintf("chin_t0", PIMC.chin_t0, io)
+    end
+    myprintf("hdf5_file", PIMC.hdf5_file, io)
+    
+    #myprintf("dim", dim, io)
+    #myprintf("λ", λ, io)
+    #myprintf("ρ", N/PIMC.L^dim, io)
+        
+    #not_show = ["potential","measurements","moves","reports","ipimc","iworm","head","tail","acceptance","syspots"]
+    #for field in fieldnames(typeof(PIMC))
+    #    any(occursin.(not_show, String(field))) && continue
+    #    value = getproperty(PIMC, field)                
+    #    myprintf(field, value, io)
+    #end
     
     myprintf("worm_C", worm_C, io)
     myprintf("worm_K" ,worm_K, io)
-    myprintf("worm_limit" ,worm_limit, io)
+    #myprintf("worm_limit" ,worm_limit, io)
     println(io, "# "*"="^80)
 end
 
@@ -85,7 +98,7 @@ function report_energy(PIMC::t_pimc, meas::t_measurement)
     open(meas.filename, "a") do f
         if notdone
             # exact energies, if known, else 0.0
-            Eexact_dist = PIMC_Common.system.E_exact(β, dim, N) 
+            Eexact_dist = PIMC_Common.system.E_exact(β, dim, N, λ, PIMC.L) 
             Eexact_bose = PIMC_Common.system.E_exact_bosons(β, dim, N)
             # write PIMC parameters to a header
             pimc_report(PIMC, f)
@@ -100,7 +113,7 @@ function report_energy(PIMC::t_pimc, meas::t_measurement)
         println(f, " ", M, " ", 1/β)
     end
     # set HDF4 data Dict
-    results[string(meas.name)] = Dict(
+    results[meas.sname] = Dict(
         "E" => ave[1], 
         "std_E" => std[1],
         "T" => ave[2],
@@ -111,13 +124,17 @@ function report_energy(PIMC::t_pimc, meas::t_measurement)
     
 
     # screen output
-    @printf("%d %-8s <E> = %12.8f ± %-12.8f  <T> = %12.8f ± %-12.8f <V> =  %12.8f ± %-12.8f\n",
+    @printf("%d %-15s <E> = %12.8f ± %-12.8f  <T> = %12.8f ± %-12.8f <V> =  %12.8f ± %-12.8f\n",
             PIMC.ipimc, meas.name,  ave[1], std[1], ave[2], std[2], ave[3], std[3])
    
     if meas.name == :E_vir # output only once per report      
         if !isapprox(Eexact_dist, 0.0) || !isapprox(Eexact_bose, 0.0)
             if PIMC_Common.sys == :Noninteracting
-                @printf("   | GC  dist. <E> = %12.8f Bose   <E> = %12.8f\n", Eexact_dist, Eexact_bose)
+                if dim==3 && N>5    
+                    @printf("   | GC  dist. <E> = %12.8f Bose   <E> = %12.8f\n", Eexact_dist, Eexact_bose)
+                else
+                    @printf("   | Exact dist. <E> = %12.8f Bose   <E> = %12.8f\n", Eexact_dist, Eexact_bose)
+                end
             else
                 @printf("   | Exact dist. <E> = %12.8f Bose   <E> = %12.8f\n", Eexact_dist, Eexact_bose)
             end
@@ -135,7 +152,7 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
         # nothing to save to hdf5
         return
     end
-    println("** Writing HDF5 file **")
+    #println("** Writing HDF5 file **")
     fname = PIMC.hdf5_file 
     # Dict that holds PIMC results
     data = PIMC_Common.results
@@ -188,10 +205,9 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
         # results
        
         for meas in PIMC.measurements
-            namestr = string(meas.name)
-            if haskey(data, namestr)        
-                g = create_group(f, namestr)
-                for (k, v) in data[namestr]
+            if haskey(data, meas.sname)        
+                g = create_group(f, meas.sname)
+                for (k, v) in data[meas.sname]
                     g[k] = v  
                 end
             end
@@ -199,7 +215,7 @@ function pimc_results_to_hdf5(PIMC::t_pimc)
         
        
     end
-    println("done")
+    #println("done")
 end
 
 

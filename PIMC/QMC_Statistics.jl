@@ -17,6 +17,7 @@ module QMC_Statistics
 using Statistics
 
 export init_stat, add_sample!, get_stats, t_Stat, integrated_autocorr
+export get_stats!
 
 mutable struct t_StatData
     n    ::Int64  
@@ -36,41 +37,78 @@ end
 
 
 
-function init_stat(datasize ::Int64, blocksize ::Int64; numblocks::Int64=100)
+function init_stat(datasize::Int64, blocksize::Int64; numblocks::Int64=100)
     stat = t_Stat()
     stat.blocksize = blocksize
     stat.nblocks = 0    
     stat.sample = t_StatData(0, zeros(datasize), zeros(datasize), 0.0)
-    # data blocks    
-    stat.datablock = Vector{t_StatData}(undef, numblocks) # was []
+    # data blocks
+    stat.datablock = Vector{t_StatData}(undef, numblocks) 
+    # init numblocks data blocks
+    for j in 1:numblocks
+        stat.datablock[j] = t_StatData(
+            0,
+            zeros(length(stat.sample.data)),
+            zeros(length(stat.sample.data)),
+            0.0
+        )
+    end    
     stat.finished = false
     return stat
 end
 
 function add_sample!(stat ::t_Stat, dat)
     stat.finished  = false
-    @. stat.sample.data  += dat
-    @. stat.sample.data2 += dat^2
+    @inbounds for i in eachindex(dat)
+        x = dat[i]
+        stat.sample.data[i]  += x
+        stat.sample.data2[i] += x*x
+    end
     stat.sample.n += 1
     
     if stat.sample.n == stat.blocksize
         # one full block collected, move average to block data
         # input data σ^2:
         N = stat.sample.n
-        d2 = sum(stat.sample.data2)/N
-        d  = sum(stat.sample.data)/N
+        d = 0.0
+        d2 = 0.0
+        for i in eachindex(stat.sample.data)
+            d += stat.sample.data[i]
+            d2 += stat.sample.data2[i]
+        end
+        d /= N
+        d2 /= N
         input_σ2 = d2-d^2
         #
         stat.nblocks += 1
+        # resize if necessary
         if stat.nblocks > length(stat.datablock)
-            old_size =  length(stat.datablock)
-            resize!(stat.datablock, old_size + 100) # unintialized elements in the end
-        end 
-        stat.datablock[stat.nblocks] = t_StatData(0, stat.sample.data./N, zeros(length(stat.sample.data)), input_σ2)
-        # old, see "was" in init_stat
-        #push!(stat.datablock,t_StatData(0, stat.sample.data./N, zeros(length(stat.sample.data)), input_σ2))        
-        @. stat.sample.data = 0
-        @. stat.sample.data2 = 0
+            old =  length(stat.datablock)
+            resize!(stat.datablock, old + 100) # unintialized elements in the end
+            # preallocate 
+            for j in old+1:length(stat.datablock)
+                stat.datablock[j] = t_StatData(
+                    0,
+                    zeros(length(stat.sample.data)),
+                    zeros(length(stat.sample.data)),
+                    0.0
+                )
+            end
+        end
+        blk = stat.datablock[stat.nblocks]
+        # fill block averages        
+        @inbounds for i in eachindex(stat.sample.data)
+            blk.data[i] = stat.sample.data[i] / N
+            blk.data2[i] = 0.0   
+        end
+        blk.input_σ2 = input_σ2
+        # old, before preallocation:        
+        #stat.datablock[stat.nblocks] = t_StatData(0, stat.sample.data./N, zeros(length(stat.sample.data)), input_σ2)
+        
+        @inbounds for i in eachindex(stat.sample.data)
+            stat.sample.data[i]  = 0.0
+            stat.sample.data2[i] = 0.0
+        end
         stat.sample.n = 0
         stat.finished = true
     end  
@@ -110,6 +148,50 @@ function get_stats(stat ::t_Stat)
     @. std = var/sqrt(N)    
     return ave, std, input_σ2, N, stat.datablock[N].data 
 end
+
+
+# use buffers
+const ave2_buffer = Vector{Float64}(undef, 1000) # should be enough
+
+function get_stats!(stat::t_Stat, ave::AbstractVector{Float64}, std::AbstractVector{Float64},
+                   ave2_buf::Vector{Float64} = ave2_buffer,
+                   )
+    N = stat.nblocks
+    if N==0
+        println("get_stats: no data")
+        return 0, 0, 0, 0
+    end
+    if length(stat.datablock[1].data)==1
+        a, s, input_σ2_1, N_1 = get_stats_1(stat ::t_Stat)
+        ave[1] = a
+        std[1] = s
+        return input_σ2_1, N_1        
+    end
+    ave2 = @view ave2_buf[1:length(ave)]
+    @inbounds @views ave .= 0
+    @inbounds @views ave2 .= 0
+    input_σ2 = 0.0
+    
+    @inbounds begin
+        for i = 1:N
+            d = stat.datablock[i].data
+            for j in eachindex(d)
+                ave[j] += d[j]
+                ave2[j] += d[j]^2
+            end
+            input_σ2 += stat.datablock[i].input_σ2 
+        end
+        @views ave ./= N
+        @views ave2 ./= N
+        input_σ2 /= N
+    end
+    for i in eachindex(ave)
+        var = sqrt(abs(ave2[i] - ave[i]^2))
+        std[i] = var/sqrt(N)
+    end
+    return input_σ2, N #, stat.datablock[N].data 
+end
+
 
 function get_stats_1(stat ::t_Stat)
     N = stat.nblocks

@@ -9,7 +9,7 @@ using PIMC_Primitive_Action: init_action! as init_action_prim!
 using PIMC_Primitive_Action: U as U_prim, K as K_prim, U_update as U_update_prim, U_stored as U_stored_prim
 using PIMC_Primitive_Action: update_stored_slice_data as update_stored_slice_data_prim
 using PIMC_Primitive_Action: init_stored as init_stored_prim
-using PIMC_Primitive_Action: meas_E_th as meas_E_th_prim,  meas_E_vir as meas_E_vir_prim 
+using PIMC_Primitive_Action: meas_E_th as meas_E_th_prim,  meas_E_vir as meas_E_vir_prim
 using PIMC_Primitive_Action: meas_virial_pressure as meas_virial_pressure_prim
     
 using PIMC_Chin_Action: init_action! as init_action_chin!
@@ -17,15 +17,34 @@ using PIMC_Chin_Action: update_stored_slice_data as update_stored_slice_data_chi
 using PIMC_Chin_Action: U_update as U_update_chin, U_stored as U_stored_chin
 using PIMC_Chin_Action: init_stored as init_stored_chin
 using PIMC_Chin_Action: opt_chin_a1_chin_t0
-using PIMC_Chin_Action: meas_E_th as meas_E_th_chin, meas_E_vir as meas_E_vir_chin 
+using PIMC_Chin_Action: meas_E_th as meas_E_th_chin, meas_E_vir as meas_E_vir_chin
 using PIMC_Chin_Action: meas_virial_pressure as meas_virial_pressure_chin
 
 export init_action!, init_stored, update_stored_slice_data
 export U, K, U_stored, U_update
-export meas_E_th, meas_E_vir, meas_virial_pressure
+export meas_E_th, meas_E_vir, meas_E_vir_loop, meas_virial_pressure
+export get_ms, opt_chin_a1_chin_t0
 
 # compile-time dispatch:
 # ======================
+
+# "Symmetric" physical slices where measurements are done
+# needed for Chin Action, which has 3 slices per one τ 
+# Compile-time dispatch
+
+
+@inline function get_ms(::PrimitiveAction, M::Int64)
+    return 1:M
+end
+@inline function get_ms(::ChinAction, M::Int64)
+    return 2:3:M
+end
+@inline function get_ms(M::Int64)
+    A = PIMC_Common.action
+    return get_ms(A(), M)
+end
+
+
 
 @inline function init_action!(::PrimitiveAction, PIMC::t_pimc, beads::t_beads)
     return init_action_prim!(PIMC, beads)
@@ -62,6 +81,7 @@ function meas_E_th(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measure
     A = PIMC_Common.action  
     return meas_E_th(A(), PIMC, beads, links, meas)
 end
+
 function meas_E_vir(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt::Bool=false)
     return meas_E_vir_prim(PIMC::t_pimc, beads::t_beads, links::t_links, meas::t_measurement; opt=opt)
 end
@@ -85,10 +105,10 @@ function meas_virial_pressure(PIMC::t_pimc, beads::t_beads, links::t_links, meas
 end
 
 
-@inline function U(::PrimitiveAction, PIMC::t_pimc, beads::t_beads, id::Int64)
+@inline function U(::PrimitiveAction, PIMC::t_pimc, beads::t_beads) 
     return U_prim(PIMC, beads, id)
 end
-@inline function U(::ChinAction, PIMC::t_pimc, beads::t_beads, id::Int64)
+@inline function U(::ChinAction, PIMC::t_pimc, beads::t_beads)
     return U_chin(PIMC, beads)
 end
 @inline function U(PIMC::t_pimc, beads::t_beads)

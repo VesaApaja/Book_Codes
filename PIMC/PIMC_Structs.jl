@@ -3,41 +3,47 @@ module PIMC_Structs
 
 using Printf
 using Random
-using LinearAlgebra: BLAS, ⋅
+using LinearAlgebra: BLAS, ⋅, norm
 BLAS.set_num_threads(1) 
 using JLD2 # binary restart files
 using BenchmarkTools
 using InteractiveUtils
+using Distributions: Categorical
+
+using TimerOutputs
+const to = TimerOutput()
 
 # local modules:
 push!(LOAD_PATH,".")
 using QMC_Statistics: t_Stat, get_stats
 using PIMC_Systems
 using PIMC_Common
-
+using PIMC_Neighborlist
 
 export t_pimc, t_links, t_beads, t_move, t_measurement
 export init_pimc, run_pimc, check_links
 export write_restart, read_restart!
-export has_potential
 
-@inline norm(x) = sqrt(sum(abs2,x))
 
-struct t_move
+
+mutable struct t_move
     frequency::Int64
     name::Symbol
+    sname::String
     exe::Function
     ntries::Int64
     nacc::Int64
+    acc::Float64
     # constructor
-    function t_move(; frequency=1, name=name, exe=exe, ntries=0, nacc=0)
-        return new(frequency, name, exe, ntries, nacc)
+    function t_move(; frequency=1, name=name, sname=sname, exe=exe, ntries=0, nacc=0, acc=0.0)
+        return new(frequency, name, sname, exe, ntries, nacc, acc)
     end
 end
 
 mutable struct t_measurement
     frequency::Int64
     name::Symbol
+    sname::String
     exe::Function
     stat::t_Stat
     filename::String
@@ -50,6 +56,8 @@ struct t_beads
     at_t::Dict{Int64, Vector{Int64}}  # mapping bead time slice ->  list of id's
     times::Vector{Float64} # mapping bead id -> imaginary time
     active::BitVector
+    active_at_t::Vector{Vector{Int}}
+    inactive_at_t::Vector{Vector{Int}}
 end
       
 
@@ -71,19 +79,8 @@ end
 
 
 
-# For non-existing confinement or pair potential cases
-struct NoPotential end
-(::NoPotential)(x...) = 0.0
-(::NoPotential)(x::AbstractVector) = zeros(eltype(x), length(x))
-(::NoPotential)(x::Real) = 0.0
-
-# traits; multiple dispatch chooses based on argument type, most specialized match wins
-has_potential(::NoPotential) = false   
-has_potential(::Any) = true    
-
 # parametric type
-mutable struct t_pimc{A<:PIMC_Common.action,
-                      Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2}
+mutable struct t_pimc{SP<:SystemPotentials}
     canonical::Bool                  # Canonical or not, not means grand canonical
     M::Int64                         # number of time slices    
     β::Float64                       # inverse temperature
@@ -95,17 +92,13 @@ mutable struct t_pimc{A<:PIMC_Common.action,
     head::Int64                      # worm head bead id
     tail::Int64                      #   ...     tail id
     swapcount::Int64
+    rc::Float64                      # pair potential cutoff in neighborlist 
     # Chin action parameters:
     chin_a1::Float64
     chin_t0::Float64
-    # potentials 
-    pair_potential::Fpair
-    confinement_potential::Fconf
-    der_pair_potential::Fder
-    der2_pair_potential::Fder2
-    grad_confinement_potential::Fgrad
-    grad2_confinement_potential::Fgrad2
-        
+    # potentials
+    syspots::SP #SystemPotentials
+    #
     restart_file::String
     hdf5_file::String
     filesuffix::String
@@ -118,38 +111,16 @@ mutable struct t_pimc{A<:PIMC_Common.action,
 end
 
 function init_pimc(; M::Int64,
-                   canonical::Bool, β::Float64,  L::Float64,
-                   pair_potential::Union{Function, Nothing} = nothing,
-                   confinement_potential::Union{Function, Nothing} = nothing,
-                   der_pair_potential::Union{Function, Nothing} = nothing,
-                   der2_pair_potential::Union{Function, Nothing} = nothing,
-                   grad_confinement_potential::Union{Function, Nothing} = nothing,
-                   grad2_confinement_potential::Union{Function, Nothing} = nothing
-                   ) 
-    pair_potential              = pair_potential            === nothing ? NoPotential() : pair_potential
-    confinement_potential       = confinement_potential     === nothing ? NoPotential() : confinement_potential
-    der_pair_potential          = der_pair_potential        === nothing ? NoPotential() : der_pair_potential
-    der2_pair_potential         = der2_pair_potential       === nothing ? NoPotential() : der2_pair_potential
-    grad_confinement_potential  = grad_confinement_potential === nothing ? NoPotential() : grad_confinement_potential
-    grad2_confinement_potential = grad2_confinement_potential === nothing ? NoPotential() : grad2_confinement_potential
+                   canonical::Bool, β::Float64,  L::Float64, rc::Float64,
+                   syspots::SystemPotentials
+                   )
 
-        
-    # the actual types of potentials
-    Fpair  = typeof(pair_potential)
-    Fconf  = typeof(confinement_potential)
-    Fder   = typeof(der_pair_potential)
-    Fder2  = typeof(der2_pair_potential)
-    Fgrad  = typeof(grad_confinement_potential)
-    Fgrad2 = typeof(grad2_confinement_potential)
-
+    
     # simulations box
-    if pbc && isapprox(L,0.0)
+    if pbc && isapprox(L, 0.0)
         error("Need L>0 for PBC")
     end
-    @show confinement_potential
-    if pbc && confinement_potential != NoPotential()
-        error("Can't use both PBC and confinement potential")
-    end
+   
     
     # Bead positions
     # 
@@ -171,6 +142,7 @@ function init_pimc(; M::Int64,
         at_t[t] = id_list
     end
     
+    
 
     # bead id -> imaginary time mapping (τ units), set in PIMC_main calling init_action! 
     times = Array{Float64}(undef, length(ids))
@@ -184,16 +156,35 @@ function init_pimc(; M::Int64,
     end
     @show PIMC_Common.action, τ
     
-    active = falses(Nbeads)
+
     # allocate beads and their backup
-    beads = t_beads(Matrix{Float64}(undef, dim, Nbeads), ids, ts, at_t, times, active)
+    beads = t_beads(Matrix{Float64}(undef, dim, Nbeads), ids, ts, at_t, times,
+                    falses(Nbeads), Vector{Vector{Int}}(undef, M), Vector{Vector{Int}}(undef, M))
     beads_backup = deepcopy(beads) # deepcopy to get independent array memory
+    
+    
     
     # activate N beads for each slice
     for m in 1:M
         bs = beads.at_t[m][1:N]
-        active[bs] .= true
+        beads.active[bs] .= true # bitvector
+        # list active and inactive beads on each slice
+        beads.active_at_t[m] = Int[]
+        beads.inactive_at_t[m] = Int[]
+        beads_backup.active_at_t[m] = Int[]
+        beads_backup.inactive_at_t[m] = Int[]
+        for b in beads.at_t[m]
+            if beads.active[b]
+                push!(beads.active_at_t[m], b)
+                push!(beads_backup.active_at_t[m], b)
+            else
+                push!(beads.inactive_at_t[m], b)
+                push!(beads_backup.inactive_at_t[m], b)
+            end
+        end        
     end
+        
+    
     # bead <-> bead links (whether active or not)   
     next  = zeros(Int64, Nbeads)  # id of next bead 
     prev  = zeros(Int64, Nbeads)  # id of previous bead
@@ -223,27 +214,33 @@ function init_pimc(; M::Int64,
         # follow links so that world lines are (almost) straight 
         bs = beads.at_t[1][1:N]  # start links from N beads at slice 1
         i = 1 # particle i world line
-        for id1 in bs
-            id = id1            
-            while true
-                @inbounds beads.X[:, id] .= pos[:,i] 
-                id = links.next[id]
-                id == id1 && break
+        @inbounds begin
+            for id1 in bs
+                id = id1            
+                while true
+                    beads.X[:, id] .= pos[:,i]
+                    # just to be sure:
+                    periodic!(view(beads.X, :, id), L)
+                    id = links.next[id]
+                    id == id1 && break
+                end
+                i += 1
             end
-            i += 1
-        end
+        end        
     else
         λ = 0.5 # just for this init
         for id in beads.ids[beads.active]
             beads.X[:, id] .= randn(dim) * sqrt(2*λ*τ) # gaussian distribution
-        end
-     
+        end       
     end
+
+    
     ipimc = 0
     iworm = 0
     head = -1
     tail = -1
     swapcount = 0
+    # 
     μ = 0.0
     chin_a1 = 0.33 
     chin_t0 = 0.1215   
@@ -255,16 +252,14 @@ function init_pimc(; M::Int64,
     moves = t_move[]
     reports = t_report[]
 
+  
+    
     # can use only positional arguments here
-    PIMC = t_pimc{PIMC_Common.action, Fpair, Fconf, Fder, Fder2, Fgrad, Fgrad2}(
+    PIMC = t_pimc{typeof(syspots)}(
         canonical, M, β, τ, L, μ, ipimc, iworm, head, tail, swapcount,
+        rc, 
         chin_a1, chin_t0,
-        pair_potential,
-        confinement_potential,
-        der_pair_potential,
-        der2_pair_potential,
-        grad_confinement_potential,
-        grad2_confinement_potential,
+        syspots,
         restart_file,
         hdf5_file,
         filesuffix,
@@ -273,47 +268,50 @@ function init_pimc(; M::Int64,
         moves,
         reports
     )
+
     check_links(PIMC, beads, links)
-   
-    
+
     return PIMC, beads, links, beads_backup, links_backup
 end
 
-    
-function find_measurement(PIMC::t_pimc, target_name)
-    """find a measurement by name"""
-    for meas in PIMC.measurements
-        if meas.name == target_name
-            return meas
-        end
-    end
-    return nothing
-end
          
 
 function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_beads, links_backup::t_links, limit::Int=-1)
-    """Runs the PIMC simulation"""
-    moves = []
-    move_name_to_num = Dict()
-    for (i, move) in enumerate(PIMC.moves)
-        for rep in 1:move.frequency
-            push!(moves, move)
+    """Runs the PIMC simulation (stops after limit steps if set, else eternally)"""
+    
+    # Moves run in Z-section, where a worm is not open
+    moves = t_move[]
+    probs = Float64[]
+    for move in PIMC.moves
+        if move.name !== :worm_move
+            if contains(move.sname, "worm")
+                continue
+            end
         end
-        move_name_to_num[move.name] = i
+        push!(moves, move)
+        push!(probs, move.frequency)
     end
+    sum_probs = sum(probs)
+    probs ./= sum_probs  
+    distrib = Categorical(probs)
     
-    meas_name_to_num = Dict()
-    for (i, meas) in enumerate(PIMC.measurements)
-        meas_name_to_num[meas.name] = i
+    # Moves run in C-section, where a worm is open
+    worm_moves = t_move[]
+    probs = Float64[]
+    for move in PIMC.moves
+        move.name == :worm_move && continue
+        move.name == :worm_open && continue
+        if !contains(move.sname, "worm")
+            continue
+        end
+        push!(worm_moves, move)
+        push!(probs, move.frequency)
     end
-    
-    
-    move_timers = zeros(length(PIMC.moves))
-    meas_timers = zeros(length(PIMC.measurements))
-    move_counts = zeros(Int64, length(PIMC.moves))
-    meas_counts = zeros(Int64, length(PIMC.measurements))
-
-    # move open-worm measurements to own list    
+    sum_probs = sum(probs)
+    probs ./= sum_probs  
+    worm_distrib = Categorical(probs)
+          
+    # copy open-worm measurements to own list    
     worm_measurements = Vector{t_measurement}(undef, 0)     
     for meas in PIMC.measurements    
         if meas.name in [:head_tail_histogram, :obdm]
@@ -321,62 +319,48 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
         end
     end
     
-    
+        
     PIMC.ipimc = -Ntherm # thermalization is negative ipimc
    
     for move in PIMC.moves
         PIMC.acceptance[move] = 0.0
     end
     
-    start_time = time()
     while true
         PIMC.ipimc += 1
-        move = rand(moves)
-        movenum = move_name_to_num[move.name]
+        move = moves[rand(distrib)]
+        
+        # sanity check
         if PIMC.canonical && count(beads.active) != N*PIMC.M
             @show count(beads.active), N*PIMC.M
             error("wrong number of active beads (usually mistake in worm moves)")
         end
-        t = @elapsed begin
-            if move.name == :worm_move
-                # special
-                PIMC.acceptance[move] = move.exe(PIMC, beads, links, beads_backup, links_backup, worm_measurements)
-            else
-                PIMC.acceptance[move] = move.exe(PIMC, beads, links)
+
+        if move.name == :worm_move
+            # special                    
+            PIMC.acceptance[move] = move.exe(PIMC, beads, links, beads_backup, links_backup,
+                                             worm_measurements, worm_moves, worm_distrib, to)
+        else
+            @timeit to "moves" begin
+                @timeit to move.sname begin
+                    PIMC.acceptance[move] = move.exe(PIMC, beads, links)
+                end
             end
-        end
-        
-        move_counts[move_name_to_num[move.name]] += 1
-        if move_counts[move_name_to_num[move.name]] > 1
-            # skip compilation call
-            move_timers[move_name_to_num[move.name]] += t
         end
 
-        
-        if PIMC.ipimc%1000==0
-            println(" ")            
-            tsum = sum(move_timers)
-            t = 0.0
-            for move in PIMC.moves
-                i = move_name_to_num[move.name]                
-                @printf("timings: %15s %10.3f seconds %10.1f %% \n", move.name,
-                        move_timers[i]/move_counts[i], move_timers[i]/tsum*100.0)
-                t += move_timers[i]
-            end
-            println(" ")
-            runtime =  time()-start_time
-            @printf("total        move time = %-15.1f seconds\n",t)
-            @printf("total measurement time = %-15.1f seconds\n",runtime-t)            
-            @printf("total         run time = %-15.1f seconds\n",runtime)
+        # timing output
+        if PIMC.ipimc%10000==0
+            println(); show(to); println()
         end
-       
+               
         
+        # thermalization frequent progress print
         if PIMC.ipimc<0 && PIMC.ipimc%(Ntherm/10)==0
             println("="^80)
             @printf "Therm ipimc = %s out of %s\n" PIMC.ipimc Ntherm 
         end
 
-        # report on screen
+        # screen reports 
         for report in PIMC.reports
             if PIMC.ipimc%report.frequency==0
                 report.exe(PIMC)
@@ -384,16 +368,12 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
         end
         
         if limit>0 && abs(PIMC.ipimc)>limit
-            # profiling
+            # profiling or testing
             return
         end
         
         PIMC.ipimc < 0 && continue # in thermalization
 
-         
-        #
-        # Measuring phase
-        # 
         if PIMC.ipimc==0
             println("="^80)
             println("="^80)
@@ -406,47 +386,25 @@ function run_pimc(PIMC::t_pimc, beads::t_beads, links::t_links, beads_backup::t_
             worm_stats.N_open_acc = 0
             worm_stats.N_close_try = 0
             worm_stats.N_close_acc = 0
+            return
         end
-        
 
-               
-
-        if PIMC.ipimc%10000==0 && PIMC_Common.TEST == false
+        if PIMC.ipimc%20000==0 
             write_restart(PIMC, beads, links)            
             #GC.gc() # manual garbage collection
         end
-       
+        #
+        # Measuring phase
+        #
         for meas in setdiff(PIMC.measurements, worm_measurements)
-            if PIMC.ipimc%meas.frequency==0                
-                t = @elapsed begin
-                    meas.exe(PIMC, beads, links, meas)
-                end
-                
-                    
-                meas_counts[meas_name_to_num[meas.name]] += 1
-                if meas_counts[meas_name_to_num[meas.name]]>1
-                    # skip compilation call
-                    meas_timers[meas_name_to_num[meas.name]] += t
-                    # if timing, comment out saving restart, or you get a different result every time
-                    #if meas.name==:E_vir                    
-                    #    @show t
-                    #    exit()
-                    #end
+            if PIMC.ipimc%meas.frequency==0
+                @timeit to "measurements" begin
+                    @timeit to meas.sname begin                      
+                        meas.exe(PIMC, beads, links, meas)
+                    end
                 end
             end
         end
-        if PIMC.ipimc>0 && PIMC.ipimc%1000==0
-            println("")
-            println("Cumulative Measurement timings (not worm measurements):")            
-            tsum = sum(meas_timers)
-            for meas in setdiff(PIMC.measurements, worm_measurements)
-                i = meas_name_to_num[meas.name]                
-                @printf("timings: %30s %15.2f seconds %10.1f %% \n", meas.name,
-                        meas_timers[i], meas_timers[i]/tsum*100.0)
-            end
-            println("")
-        end
-   
     end
     
     
@@ -536,9 +494,12 @@ end
 
 
 function write_restart(PIMC::t_pimc, beads::t_beads, links::t_links)
-    println("writing restart file ...")
+    if PIMC_Common.TEST 
+        println("TEST, no restart file written")
+        return
+    end
+    println("writing restart file")
     @save PIMC.restart_file PIMC beads links worm_C=PIMC_Common.worm_C  worm_K=PIMC_Common.worm_K worm_limit=PIMC_Common.worm_limit
-    println("done")
 end
 
 function read_restart!(PIMC::t_pimc, beads::t_beads, links::t_links)
@@ -565,26 +526,27 @@ function read_restart!(PIMC::t_pimc, beads::t_beads, links::t_links)
         # continue measurements
         println("Restarting with old measured data")
         @load PIMC.restart_file PIMC # this loads the *whole* PIMC structure
-        for meas in PIMC.measurements
-            if meas.name==:obdm
-                println("ignoring obdm in restart, starting new data collection")
-                meas.stat.nblocks = 0
-                meas.stat.sample.data .= 0
-                meas.stat.sample.data2 .= 0
-                meas.stat.sample.input_σ2 = 0.0
-            end
-            break
-        end
-    else
-        println("Using default chin_a1 and chin_to, ignoring values in restart file")     
-        PIMC.chin_a1 = 0.33
-        PIMC.chin_t0 = 0.1215
+        #
     end
 
     beads.X .= data["beads"].X
-    beads.active .= data["beads"].active
+    beads.active .= data["beads"].active    
     links.next .= data["links"].next
     links.prev .= data["links"].prev
+    # reconstruct active and inactive bead vectors, don't try to use the one in backup file
+    @inbounds for m in 1:PIMC.M
+        w      = beads.active_at_t[m]
+        v      = beads.inactive_at_t[m]
+        empty!(w)
+        empty!(v)
+        @inbounds for b in beads.at_t[m]
+            if beads.active[b]
+                push!(w, b)
+            else
+                push!(v, b)
+            end
+        end
+    end
 end
 
 end
