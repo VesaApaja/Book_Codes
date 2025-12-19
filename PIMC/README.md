@@ -28,3 +28,11 @@ A new version a lot faster than previous one
  - `PIMC_Utilities.jl` short utility programs
  - `QMC_Statistics.jl` functions to collect samples and block data for error estimation (same as in DMC)
   
+Some results for liquid He4:
+
+![Energy E(T)](figures/He4_energy.png)
+![Potential energy V(T)](figures/He4_potential_energy.png)
+![Radial distribution function g(r) at T=1.0 K](figures/He4_radial_distribution_function.png)
+![Superfluid fraction ρₛ(T)](figures/He4_superfluid_fraction.png)
+![Static structure factor S(k) at T=1.0 K](figures/He4_static_structure_factor.png)
+
