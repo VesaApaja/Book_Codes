@@ -16,7 +16,6 @@ using QMC_Statistics
 using PIMC_Moves
 using PIMC_Measurements
 using PIMC_Reports
-using PIMC_Neighborlist
 
 using PIMC_Action_Interface
 

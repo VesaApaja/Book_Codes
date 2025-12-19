@@ -8,10 +8,6 @@ using LinearAlgebra
 include("PIMC_Systems.jl")
 using .PIMC_Systems: HarmonicOscillator, HeLiquid, Noninteracting
 
-# under construction:
-using PIMC_Neighborlist: t_neighborlist
-
-
 export λ, pbc, bose, Ntherm, system, τ_target, SystemPotentials, syspots
 export has_potential
 export action, results

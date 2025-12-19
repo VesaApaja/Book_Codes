@@ -18,7 +18,6 @@ push!(LOAD_PATH,".")
 using QMC_Statistics: t_Stat, get_stats
 using PIMC_Systems
 using PIMC_Common
-using PIMC_Neighborlist
 
 export t_pimc, t_links, t_beads, t_move, t_measurement
 export init_pimc, run_pimc, check_links
