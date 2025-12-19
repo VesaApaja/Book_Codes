@@ -32,7 +32,6 @@ The new and **a lot faster** version of the PIMC program.
 - `Printf` formatted printing
 - `ForwardDiff` automatic differentiation
 - `TimerOutputs` timing execution 
-- `BenchmarkTools` for benchmarking; unused in production code
 - `HDF5` saving data in HDF5 format
 - `JLD2` saving restart files
 - `StaticArrays` fast constant-size, stack-allocated arrays
@@ -40,9 +39,10 @@ The new and **a lot faster** version of the PIMC program.
 - `DelimitedFiles` for reading data files, such as experimental density 
 - `Random` set RNG seed for reproducibility in testing 
 - `Printf` formatted printing
-- `Distributions` Categorical tower sampling
+- `Distributions` Categorical tower sampling (and other distributions mostly for testing)
 - `Dates` dates for hdf5 output file
-
+- `BenchmarkTools` for benchmarking using `@btime`; unused in production code
+- `InteractiveUtils` for benchmarking using `@code_warntype`; unused in production code
 Any other packages should be leftovers from testing/debugging.
   
 Some results for liquid He4; canonical ensemble, computed at experimental density:
