@@ -53,7 +53,7 @@ Some results for liquid He4; canonical ensemble, computed at experimental densit
 ![Radial distribution function g(r) at T=1.0 K](figures/He4_radial_distribution_function.png)
 ![Static structure factor S(k) at T=1.0 K](figures/He4_static_structure_factor.png)
 ![Superfluid fraction ρₛ(T)](figures/He4_superfluid_fraction.png)
-![Condensate fraction n<sub>0</sub>(T)](figures/He4_condensate_fraction)
+![Condensate fraction n<sub>0</sub>(T)](figures/He4_condensate_fraction.png)
 
 The plots were made using the script `analyze_hdf5.py` Python (matplotlib), which reads the hdf5 `*h5` 
 files and plots the results. Some data are not shown:
