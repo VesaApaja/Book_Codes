@@ -2,7 +2,7 @@
 
 This directory contains a Julia PIMC program and a few Python programs mostly for plotting and demonstrations.
 
-The new faster version of the PIMC program.
+The new **a lot faster** version of the PIMC program.
 
 # Main Program
 - `PIMC_main.jl` is the main program for PIMC in the canonical ensemble. 
