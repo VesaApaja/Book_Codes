@@ -234,6 +234,7 @@ def readdat(ids):
 def plot_E(Edata, col, action_str, N, first):
     plt.figure(1)
     if first:
+        plt.clf()
         #plt.plot(T_bon,E_bon,'bo-',markersize=4, label='Boninsegni')
         #plt.plot(T_cp,E_cp,'rx',markersize=4, label='Ceperley-Pollock')
         plt.plot(T_exp,E_exp,'b-', label='Experiment')
@@ -243,12 +244,6 @@ def plot_E(Edata, col, action_str, N, first):
     Ts = np.array([d[0] for d in Edata])
     Es = np.array([d[1] for d in Edata])
     stds = np.array([d[2] for d in Edata])
-    # skip N=16 T<1.0, thermal wavelength ~ box length L
-    if N==16:
-        mask = Ts > 0.9
-        Ts = Ts[mask]
-        Es = Es[mask]
-        stds = stds[mask]
     
     plt.errorbar(Ts,Es,stds,marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
 
@@ -261,10 +256,10 @@ def plot_E(Edata, col, action_str, N, first):
 
     
 def plot_g(gdata, col, action_str, N, first):    
-    # Plot g(r)
-    
+    # Plot g(r)    
     plt.figure(2)
     if first:
+        plt.clf()
         plt.plot(r_svensson, g_svensson,'bo', label="Exp. Neutron diffraction at T=1.0 K (Svensson et al.)", markersize=3)
 
     for dat in gdata:
@@ -288,6 +283,7 @@ def plot_g(gdata, col, action_str, N, first):
 def plot_rhos(rhosdata, col, action_str, N, first):
     plt.figure(3)
     if first:
+        plt.clf()
         plt.plot(T_meas,rhos_meas,'b-',label=r'Exp. He$^4$ superfluid fraction')
     lab = " N="+str(N)
     rhosdata.sort()
@@ -313,6 +309,7 @@ def plot_rhos(rhosdata, col, action_str, N, first):
 def plot_V(Vdata, col, action_str, N, first):
     plt.figure(4)                               
     if first:
+        plt.clf()
         plt.plot(T_bon,V_bon,'bo-',markersize=4, label='PIMC: Boninsegni et al.')
         plt.plot(T_cp,V_cp,'rx-',markersize=4, label='PIMC: Ceperley & Pollock')
 
@@ -333,37 +330,16 @@ def plot_V(Vdata, col, action_str, N, first):
     plt.draw()
 
 
-def plot_obdm(data, col, N, first):    
-    # Plot obdm(r) a.k.a. rho_1(r)
-    return #skip
-    plt.figure(5)
-    
-    data.sort()
-    for dat in data:
-        T, rs, obdms, stds = dat        
-        Tscr = f'{T:.3f}'
-        lab = "T = "+Tscr+" N="+str(N)
-        
-        plt.plot(rs, obdms, label = "T = "+Tscr+" N="+str(N))
-        #plt.errorbar(rs,obdms,stds, marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
-    plt.xlabel("r")
-    plt.ylabel(r"$\rho_1(r)$")
-    plt.title("One-body density matrix (obdm)")
-    plt.ylim([0,1.1])
-    plt.tight_layout()
-    #plt.legend()    
-    plt.pause(0.001)
-    plt.draw()
-
     
 def plot_n0(data, col, action_str, N, first):
-    plt.figure(6)
+    plt.figure(5)
+    if first:
+        plt.clf()
     lab = " N="+str(N)
     data.sort()
     Ts = np.array([d[0] for d in data])
     n0s = np.array([d[1] for d in data])
     stds = np.array([d[2] for d in data])
-    # skip N>64 data below 1.9 K (not converged)
     if N>64:
         mask = Ts >= 1.9
         Ts = Ts[mask]
@@ -391,47 +367,15 @@ def plot_n0(data, col, action_str, N, first):
     plt.ylabel(r"$n_0$")
     plt.legend()
     plt.pause(0.001)
-    plt.draw() 
-
-def plot_P(data, col, action_str, N, first):
-    plt.figure(7)
-    lab = " N="+str(N)
-    data.sort()
-    Ts = np.array([d[0] for d in data])
-    Ps = np.array([d[1] for d in data])
-    stds = np.array([d[2] for d in data])
-    plt.errorbar(Ts, Ps, stds, marker='o',color=col, ls='none', label=lab, markersize=4, capsize=3)
-    plt.xlabel("T [K]")
-    plt.ylabel(r"$P~ [K/\AA^3]$")
-    plt.legend()
-    plt.pause(0.001)
     plt.draw()
 
-def plot_rho(data, col, action_str, N, first):
-    plt.figure(8)
-    if first:
-        plt.plot(rho_measured[:,0], rho_measured[:,1] ,'b-',label=r'Exp. He$^4$ density at SVP')
-    lab = " N="+str(N)
-    if len(data)>0:
-        data.sort()
-        Ts = [d[0] for d in data]
-        rhos = [d[1] for d in data]
-        plt.plot(Ts,rhos, marker='o',color=col,ls='none',label=lab,markersize=4)
-
-
-    plt.title("Density")
-    plt.xlabel("T [K]")
-    plt.ylabel(r"$\rho  [1/\AA^3]$")
-    plt.legend()
-    plt.pause(0.001)
-    plt.draw()
-
+    
     
 def plot_Sk(Skdata, col, action_str, N, first):    
     # Plot S(kr)
     if N>64:
         return # not converged
-    plt.figure(9)
+    plt.figure(6)
     if first:
         plt.plot(k_svensson, Sk_svensson,'bo', label="Exp. Neutron diffraction at T=1.0 K (Svensson et al.)", markersize=3)
 
@@ -451,6 +395,66 @@ def plot_Sk(Skdata, col, action_str, N, first):
     plt.legend()    
     plt.pause(0.001)
     plt.draw() 
+
+def plot_obdm(data, col, N, first):    
+    # Plot obdm(r) a.k.a. rho_1(r)
+    return #skip
+    plt.figure(15)
+    if first:
+        plt.clf()
+    data.sort()
+    for dat in data:
+        T, rs, obdms, stds = dat        
+        Tscr = f'{T:.3f}'
+        lab = "T = "+Tscr+" N="+str(N)
+        
+        plt.plot(rs, obdms, label = "T = "+Tscr+" N="+str(N))
+        #plt.errorbar(rs,obdms,stds, marker='o',color=col,ls='none',label=lab,markersize=4,capsize=3)
+    plt.xlabel("r")
+    plt.ylabel(r"$\rho_1(r)$")
+    plt.title("One-body density matrix (obdm)")
+    plt.ylim([0,1.1])
+    plt.tight_layout()
+    #plt.legend()    
+    plt.pause(0.001)
+    plt.draw()
+
+def plot_P(data, col, action_str, N, first):
+    plt.figure()
+    if first:
+        plt.clf()
+    lab = " N="+str(N)
+    data.sort()
+    Ts = np.array([d[0] for d in data])
+    Ps = np.array([d[1] for d in data])
+    stds = np.array([d[2] for d in data])
+    plt.errorbar(Ts, Ps, stds, marker='o',color=col, ls='none', label=lab, markersize=4, capsize=3)
+    plt.xlabel("T [K]")
+    plt.ylabel(r"$P~ [K/\AA^3]$")
+    plt.legend()
+    plt.pause(0.001)
+    plt.draw()
+
+def plot_rho(data, col, action_str, N, first):
+    plt.figure()
+    if first:
+        plt.clf()
+        plt.plot(rho_measured[:,0], rho_measured[:,1] ,'b-',label=r'Exp. He$^4$ density at SVP')
+    lab = " N="+str(N)
+    if len(data)>0:
+        data.sort()
+        Ts = [d[0] for d in data]
+        rhos = [d[1] for d in data]
+        plt.plot(Ts,rhos, marker='o',color=col,ls='none',label=lab,markersize=4)
+
+
+    plt.title("Density")
+    plt.xlabel("T [K]")
+    plt.ylabel(r"$\rho  [1/\AA^3]$")
+    plt.legend()
+    plt.pause(0.001)
+    plt.draw()
+
 # ============================================
 
     
@@ -554,13 +558,6 @@ def plot():
             ok = True
         if not ok:
             print("no data to plot")
-        #if first:
-        #    for i in range(1,10):
-        #        plt.figure(i)
-        #       plt.clf()
-            
-        
-        
             
         if action=="chin":
             action_str = "Chin Action" 
