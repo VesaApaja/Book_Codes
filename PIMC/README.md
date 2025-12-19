@@ -51,6 +51,12 @@ Some results for liquid He4; canonical ensemble, computed at experimental densit
 ![Energy E(T)](figures/He4_energy.png)
 ![Potential energy V(T)](figures/He4_potential_energy.png)
 ![Radial distribution function g(r) at T=1.0 K](figures/He4_radial_distribution_function.png)
-![Superfluid fraction ρₛ(T)](figures/He4_superfluid_fraction.png)
 ![Static structure factor S(k) at T=1.0 K](figures/He4_static_structure_factor.png)
+![Superfluid fraction ρₛ(T)](figures/He4_superfluid_fraction.png)
+![Condensate fraction n<sub>0</sub>(T)](figures/He4_condensate_fraction)
 
+The plots were made using the script `analyze_hdf5.py` Python (matplotlib), which reads the hdf5 `*h5` 
+files and plots the results. Some data are not shown:
+- N=16 energy below T=1 K, because the thermal wavelength is too large compared with the PBC box L
+- N=128 condensate fraction at low T is not fully converged; the correct T->0 limit of n<sub>0</sub> is about 8 %. 
+ 
