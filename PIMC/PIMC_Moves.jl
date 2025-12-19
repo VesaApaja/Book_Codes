@@ -6,7 +6,7 @@ using Random, LinearAlgebra
 BLAS.set_num_threads(1) 
 using Distributions: Categorical, Geometric, Exponential, Truncated
 using Printf
-using InteractiveUtils # for @code_warntype profiling
+#using InteractiveUtils # for @code_warntype profiling
 using StaticArrays
 
 

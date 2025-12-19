@@ -6,8 +6,8 @@ using Random
 using LinearAlgebra: BLAS, ⋅, norm
 BLAS.set_num_threads(1) 
 using JLD2 # binary restart files
-using BenchmarkTools
-using InteractiveUtils
+#using BenchmarkTools
+#using InteractiveUtils
 using Distributions: Categorical
 
 using TimerOutputs
