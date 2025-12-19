@@ -28,6 +28,22 @@ The new faster version of the PIMC program.
  - `PIMC_Utilities.jl` short utility programs
  - `QMC_Statistics.jl` functions to collect samples and block data for error estimation (same as in DMC)
   
+# External Julia packages used in the PIMC code
+- `Printf` formatted printing
+- `ForwardDiff` automatic differentiation
+- `TimerOutputs` timing execution 
+- `BenchmarkTools` for benchmarking; unused in production code
+- `HDF5` saving data in HDF5 format
+- `JLD2` saving restart files
+- `StaticArrays` fast constant-size, stack-allocated arrays
+- `LinearAlgebra` vector norm and dot product
+- `DelimitedFiles` for reading data files, such as experimental density 
+- `Random` set RNG seed for reproducibility in testing 
+- `Printf` formatted printing
+- `Distributions` Categorical tower sampling
+- `Dates` dates for hdf5 output file
+Any other packages should be leftovers from testing/debugging.
+  
 Some results for liquid He4; canonical ensemble, computed at experimental density:
 
 ![Energy E(T)](figures/He4_energy.png)
