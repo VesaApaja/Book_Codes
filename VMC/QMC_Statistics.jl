@@ -104,8 +104,12 @@ function get_stats(stat ::t_Stat)
     var2 = copy(ave)
     std_err = copy(ave)
     @. var2 = abs(ave2 - ave^2)
-    @. var = sqrt(var2)
-    @. std_err = var/sqrt(N-1) # corrected sample error     
+    @. var = sqrt(var2)    
+    if N==1
+        @. std_err = 0.0
+    else
+        @. std_err = var/sqrt(N-1) # corrected sample error
+    end
     return ave, std_err, input_σ2, N, stat.datablock[N].data 
 end
 
@@ -128,8 +132,12 @@ function get_stats_1(stat ::t_Stat)
     ave2 /= N
     input_σ2 /= N
     var2 = abs(ave2 - ave^2)
-    var = sqrt(var2) 
-    std_err = var/sqrt(N-1) # corrected sample error 
+    var = sqrt(var2)
+    if N==1
+        std_err = 0.0
+    else
+        std_err = var/sqrt(N-1) # corrected sample error
+    end
     return ave, std_err, input_σ2, N
 end
 
