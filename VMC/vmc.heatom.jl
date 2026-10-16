@@ -5,14 +5,11 @@ VMC on a helium atom with trial wave function φ_T
 defined in module Model_Heatom
 
 The Hamiltonian is
-H = -1/2* (nabla_1^2 + nabla_2^2) - 2/r1 - 2/r2 + 1/r12  
+H = -1/2* (∇₁² + ∇₂²) - 2/r1 - 2/r2 + 1/r12  
 =#
 
-import LinearAlgebra: norm
-using LoopVectorization
 using Printf
 using StaticArrays
-using Statistics
 
 # local modules:
 push!(LOAD_PATH,".")
@@ -99,9 +96,8 @@ function main()
     #
     ivmc = 0
     while true # until accuracy_goal is reached
-        vmc_step!(walker.R, vmc_params, Ψ_par)        
+        vmc_step!(walker.R, vmc_params, Ψ_par)
         walker.E = EL_par(walker.R)
-
         # add new energy data
         add_sample!(Estat, walker.E)
 
