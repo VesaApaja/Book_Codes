@@ -47,13 +47,7 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {
             # fermi nodal cell change, and shoudn't happen for boson ground state either
             accept = false
         else        
-            if ratio >= 1.0
-                accept = true            
-            else
-                if ratio > rand() 
-                    accept = true
-                end
-            end
+            accept = ratio >= 1.0 || ratio > rand() 
         end
         if accept
             params.Naccept +=1
@@ -89,13 +83,9 @@ function vmc_step_H2!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ) where
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
         # Metropolis:
-        accept = false        
-        p.Ntry +=1        
-        if ratio >= 1.0
-            accept = true            
-        elseif ratio > rand() 
-            accept = true
-        end
+        p.Ntry +=1
+        accept = ratio >= 1.0 || ratio > rand() 
+
         if accept
             p.Naccept +=1
             Ψ2 = Ψ2_new            
