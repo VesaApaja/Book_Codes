@@ -7,7 +7,7 @@
 #    stat = init_stat(ndata, blocksize) 
 # When stat.finished is true, and one block is done, you can
 # pick up the QMC error estimate with
-#     average, std, input_σ2, Nblocks  = get_stats(stat) 
+#     average, std_err, input_σ2, Nblocks  = get_stats(stat) 
 # where input_σ2 is the variance^2 of the raw input data
 #
 
@@ -83,8 +83,8 @@ function get_stats(stat ::t_Stat)
         return 0, 0, 0, 0
     end
     if length(stat.datablock[1].data)==1
-        ave_1, std_1, input_σ2_1, N_1 = get_stats_1(stat ::t_Stat)
-        return ave_1, std_1, input_σ2_1, N_1,  stat.datablock[N].data[1] 
+        ave_1, std_err_1, input_σ2_1, N_1 = get_stats_1(stat ::t_Stat)
+        return ave_1, std_err_1, input_σ2_1, N_1,  stat.datablock[N].data[1] 
     end
     ave = similar(stat.datablock[1].data) 
     ave2 = similar(ave)
@@ -102,11 +102,11 @@ function get_stats(stat ::t_Stat)
     input_σ2 /= N
     var = copy(ave)
     var2 = copy(ave)
-    std = copy(ave)
+    std_err = copy(ave)
     @. var2 = abs(ave2 - ave^2)
     @. var = sqrt(var2)
-    @. std = var/sqrt(N)    
-    return ave, std, input_σ2, N, stat.datablock[N].data 
+    @. std_err = var/sqrt(N-1) # corrected sample error     
+    return ave, std_err, input_σ2, N, stat.datablock[N].data 
 end
 
 function get_stats_1(stat ::t_Stat)
@@ -129,22 +129,8 @@ function get_stats_1(stat ::t_Stat)
     input_σ2 /= N
     var2 = abs(ave2 - ave^2)
     var = sqrt(var2) 
-    std = var/sqrt(N)
-    return ave, std, input_σ2, N
+    std_err = var/sqrt(N-1) # corrected sample error 
+    return ave, std_err, input_σ2, N
 end
-
-
-# not used
-function extract_block_averages(stat::t_Stat)
-    """get raw data as averages over each block, for all blocks so far"""
-    N = stat.nblocks
-    M = length(stat.datablock[1].data)
-    blocks = Matrix{Float64}(undef, M, N)  # Each column = one block average
-    for i in 1:N
-        blocks[:, i] .= stat.datablock[i].data
-    end
-    return blocks
-end
-
 
 end
