@@ -45,7 +45,7 @@ base_number = floor(Int, time() * 1000) # floor needed to avoid InexactError
 #println("FIXED SEED TESTING")
 #base_number = floor(Int, 12345 * 1000) # floor needed to avoid InexactError
 #base_number = 12345
-rngs = [MersenneTwister(base_number + i) for i in 1:Threads.nthreads()]
+rngs = [MersenneTwister(base_number + i) for i in 1:Threads.maxthreadid()]
 
 
 # Wave function parameters
@@ -634,7 +634,8 @@ function preoptimized_params(Req ::Float64)
                               [0.995800, 0.035919, 0.023542, 0.152719, 0.002589],
                               [0.994977, -0.094219, 0.002024, 0.115571, -0.006148],
                               [0.918901, 0.448724, -0.047122, 0.003267, -0.000014])
-
+    
+   
     params_dict[1.4] = Params(0.984346,
                               [0.988673, -0.031269, 0.047094, 0.233969, 0.015059],
                               [0.985987, -0.072300, -0.003928, 0.225481, -0.016072],
@@ -805,7 +806,7 @@ function main()
     # =====
     println(("="^80)*"\n   DMC\n"*("=")^80)
     # drift; separate F for each thread
-    Fs = [MMatrix{dim, N, Float64}(undef) for i in 1:Threads.nthreads()]
+    Fs = [MMatrix{dim, N, Float64}(undef) for i in 1:Threads.maxthreadid()]
 
     # check drift
     vmc_params = VMC_Params(0,0,1.0)
@@ -839,7 +840,6 @@ function main()
 
     while true
         Threads.@threads for iw in collect(alives) # vector from a set for threads
-            #@inbounds for iw in alives
             rng = rngs[Threads.threadid()]
             F = Fs[Threads.threadid()]
             
