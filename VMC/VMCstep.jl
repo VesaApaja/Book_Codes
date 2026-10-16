@@ -9,44 +9,17 @@ using Utilities: dist1, dist2
 export vmc_step!, adjust_step!
 
 
+const buf = Matrix{Float64}(undef, 1024 * 3, Threads.maxthreadid()) 
+const d_buf = [
+    MVector{3,Float64}(undef)
+    for _ in 1:Threads.maxthreadid()
+        ]
+
+
 # alternatives
 # ------------
-function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, wf_params ::Vector{Float64}) where {dim,N}
-    Ψ = ln_psi2(R, wf_params)
-    @inbounds for i in 1:N
-        rr = @SVector rand(dim)
-        
-        d   = params.step*( rr .- 0.5 ) ::SVector{dim,Float64}
-        R[:,i] += d
-        Ψ_new = ln_psi2(R, wf_params)
-        diff = Ψ_new-Ψ        
-        
-        accept = false
-        params.Ntry +=1
-        if diff>=0.0
-            accept = true            
-        else
-            if exp(diff) > rand() 
-                accept = true
-            end
-        end
-        if accept
-            params.Naccept +=1
-            Ψ = Ψ_new
-        else
-            # revert to old value
-            R[:,i] -= d
-        end        
-    end
-    Ψ
-end
-
-const buf = Vector{Float64}(undef, 1024 * 3) # max_N * max_dim
-const d_buf = MVector{3, Float64}(undef)
-
-function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ::Function) where {dim,N}
-    #  Ψ must be callable (function or functor)
-    # sanity:
+function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {dim,N}
+    # sanity checks:
     @assert N <= 1024
     if params.step<1e-15
         error("VMC step is zero")
@@ -56,9 +29,10 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ::Functio
         error("Ψ(R)<0, this shouldn't happen.")
     end
     Ψ2 = ΨR^2
-    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    tid = Threads.threadid()
+    rrs = reshape(@view(buf[1:(dim*N), tid]), dim, N)
     rand!(rrs)
-    d = @view d_buf[1:dim]
+    d = d_buf[tid]
     @inbounds for i in 1:N
         rr = @view rrs[:, i]
         @. d  = params.step*( rr - 0.5 )
@@ -91,19 +65,23 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ::Functio
     end
     sqrt(Ψ2)
 end
+
 #
-# Electrons and protons moving, first half electrons, second half protons
 # Used in H2 code
+# Only electrons moving
 # Not to be used with a wave function that has nodes
-#
-function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ::Function) where {dim,N}
+
+export vmc_step_H2!
+    
+function vmc_step_H2!(R ::MMatrix{dim, N}, p ::VMC_Params, Ψ) where {dim, N}
     ΨR = Ψ(R)
     Ψ2 = ΨR^2
     Nhalf = Int(N/2)
-    rrs = rand(dim, N)
-    # electrons and protons move with different steps
-    for i in 1:N
-        p = (i <= Nhalf) ? params[1] : params[2]
+    tid = Threads.threadid()
+    rrs = reshape(view(buf, 1:(dim*N), tid), dim, N)
+    rand!(rrs)
+    d = d_buf[tid]
+    for i in 1:Nhalf
         rr = @view rrs[:, i]
         @. d  = p.step*( rr - 0.5 )
         R[:, i] += d
@@ -111,13 +89,9 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ::Function
         Ψ2_new = Ψ_new^2
         ratio = Ψ2_new/Ψ2
         # Metropolis:
-        accept = false        
         p.Ntry +=1        
-        if ratio >= 1.0
-            accept = true            
-        elseif ratio > rand() 
-            accept = true
-        end
+        accept = ratio >= 1.0 || ratio > rand() 
+
         if accept
             p.Naccept +=1
             Ψ2 = Ψ2_new            
@@ -128,71 +102,31 @@ function vmc_step!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ::Function
     end
     sqrt(Ψ2)
 end
-#
-# Only electrons moving
-# Used in H2 code
-# Not to be used with a wave function that has nodes
-#
 
-export vmc_step_H2!
+
+
+function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ) where {dim,N}
     
-function vmc_step_H2!(R ::MMatrix{dim,N}, p ::VMC_Params, Ψ::Function) where {dim,N}
-    ΨR = Ψ(R)
-    Ψ2 = ΨR^2
-    Nhalf = Int(N/2)    
-    for i in 1:Nhalf        
-        rr = rand(dim)
-        d  = p.step*( rr .- 0.5 )
-        R[:,i] += d
-        Ψ_new = Ψ(R)
-        Ψ2_new = Ψ_new^2
-        ratio = Ψ2_new/Ψ2
-        # Metropolis:
-        accept = false        
-        p.Ntry +=1        
-        if ratio >= 1.0
-            accept = true            
-        elseif ratio > rand() 
-            accept = true
-        end
-        if accept
-            p.Naccept +=1
-            Ψ2 = Ψ2_new            
-        else
-            # revert to old value
-            R[:,i] -= d
-        end        
-    end
-    sqrt(Ψ2)
-end
-
-
-
-function vmc_step!(R ::MMatrix{dim,N}, params ::VMC_Params, wf_params ::Vector{Float64}, Ψ::Function) where {dim,N}
     ΨR(x) = Ψ(x, wf_params)
     Ψ2 = ΨR(R)^2
+    rrs = reshape(view(buf, 1:(dim*N)), dim, N)
+    rand!(rrs)
+    d = @view d_buf[1:dim]
     @inbounds for i in 1:N
-        rr = @SVector rand(dim)
-        d   = params.step*( rr .- 0.5 )
-        R[:,i] += d
+        rr = @view rrs[:, i]
+        @. d   = params.step*( rr - 0.5 )
+        R[:, i] += d
         Ψ2_new = ΨR(R)^2
         ratio = Ψ2_new/Ψ2
         # Metropolis:
-        accept = false        
         params.Ntry +=1
-        if ratio >= 1.0
-            accept = true            
-        else
-            if ratio > rand() 
-                accept = true
-            end
-        end
+        accept = ratio >= 1.0 || ratio > rand() 
         if accept
             params.Naccept +=1
             Ψ2 = Ψ2_new            
         else
             # revert to old value
-            R[:,i] -= d
+            R[:, i] -= d
         end        
     end
     sqrt(Ψ2)
