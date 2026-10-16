@@ -67,6 +67,47 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {
 end
 
 #
+# Electrons and protons moving, first half electrons, second half protons
+# Used in H2 code
+# Not to be used with a wave function that has nodes
+#
+function vmc_step_H2!(R ::MMatrix{dim,N}, params ::Vector{VMC_Params}, Ψ) where {dim,N}
+    ΨR = Ψ(R)
+    Ψ2 = ΨR^2
+    Nhalf = Int(N/2)
+    tid = Threads.threadid()
+    rrs = reshape(@view(buf[1:(dim*N), tid]), dim, N)
+    rand!(rrs)
+    d = d_buf[tid]
+    # electrons and protons move with different steps
+    for i in 1:N
+        p = (i <= Nhalf) ? params[1] : params[2]
+        rr = @view rrs[:, i]
+        @. d  = p.step*( rr - 0.5 )
+        R[:, i] += d
+        Ψ_new = Ψ(R)
+        Ψ2_new = Ψ_new^2
+        ratio = Ψ2_new/Ψ2
+        # Metropolis:
+        accept = false        
+        p.Ntry +=1        
+        if ratio >= 1.0
+            accept = true            
+        elseif ratio > rand() 
+            accept = true
+        end
+        if accept
+            p.Naccept +=1
+            Ψ2 = Ψ2_new            
+        else
+            # revert to old value
+            R[:, i] -= d
+        end        
+    end
+    sqrt(Ψ2)
+end
+
+#
 # Used in H2 code
 # Only electrons moving
 # Not to be used with a wave function that has nodes
