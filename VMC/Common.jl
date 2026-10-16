@@ -2,14 +2,15 @@
 
 module Common
 using StaticArrays
-using ForwardDiff: Dual
 using ForwardDiff
-using ReverseDiff
+# using ReverseDiff
 using DelimitedFiles: readdlm
 using CurveFit
 
 import Base: one, zero
 
+# slightly faster norm 
+@inline norm(x) = sqrt(sum(abs2,x))
 
 export Walker, init_walkers, VMC_Params, spinfactor
 export branch!
@@ -167,13 +168,13 @@ function +(ao::AtomicOrbital, b::AtomicOrbital)
 end
 
 # In case of ReverseDiff, define + between TrackedArray and StaticArray types
-function +(x::ReverseDiff.TrackedArray, y::StaticArray)
-    return x .+ y  # Element-wise broadcasting
-end
-
-function +(x::StaticArray, y::ReverseDiff.TrackedArray)
-    return x .+ y  # Element-wise broadcasting
-end
+# commented out, was a workaround for older version of ReverseDiff
+# function +(x::ReverseDiff.TrackedArray, y::StaticArray)
+#    return x .+ y  # Element-wise broadcasting
+#end
+# function +(x::StaticArray, y::ReverseDiff.TrackedArray)
+#    return x .+ y  # Element-wise broadcasting
+#end
 
 # define WfParams + Δα
 # Notice that Δα is in a specific order
@@ -245,10 +246,6 @@ function update_wf_params(a::WfParams, x::MVector{T}) where T
     new_a = WfParams(lc, jpara)
     return new_a
 end
-
-
-
-
 
 
 mutable struct VMC_Params
@@ -544,7 +541,6 @@ end
 
 # Common DMC functions
 # ====================
-
 
 
 function branch!(walker ::Vector{Walker}, copies ::MVector, alives ::Set{Int64})
