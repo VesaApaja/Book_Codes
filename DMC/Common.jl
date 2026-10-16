@@ -2,9 +2,8 @@
 
 module Common
 using StaticArrays
-using ForwardDiff: Dual
 using ForwardDiff
-using ReverseDiff
+# using ReverseDiff
 using DelimitedFiles: readdlm
 using CurveFit
 
@@ -169,13 +168,13 @@ function +(ao::AtomicOrbital, b::AtomicOrbital)
 end
 
 # In case of ReverseDiff, define + between TrackedArray and StaticArray types
-function +(x::ReverseDiff.TrackedArray, y::StaticArray)
-    return x .+ y  # Element-wise broadcasting
-end
-
-function +(x::StaticArray, y::ReverseDiff.TrackedArray)
-    return x .+ y  # Element-wise broadcasting
-end
+# commented out, was a workaround for older version of ReverseDiff
+# function +(x::ReverseDiff.TrackedArray, y::StaticArray)
+#    return x .+ y  # Element-wise broadcasting
+#end
+# function +(x::StaticArray, y::ReverseDiff.TrackedArray)
+#    return x .+ y  # Element-wise broadcasting
+#end
 
 # define WfParams + Δα
 # Notice that Δα is in a specific order
