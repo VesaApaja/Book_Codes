@@ -24,10 +24,7 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {
     if params.step<1e-15
         error("VMC step is zero")
     end
-    ΨR = Ψ(R)
-    if ΨR < 0.0
-        error("Ψ(R)<0, this shouldn't happen.")
-    end
+    ΨR = Ψ(R)    
     Ψ2 = ΨR^2
     tid = Threads.threadid()
     rrs = reshape(@view(buf[1:(dim*N), tid]), dim, N)
@@ -44,7 +41,7 @@ function vmc_step!(R::MMatrix{dim, N, Float64}, params ::VMC_Params, Ψ) where {
         accept = false        
         params.Ntry +=1
         if Ψ_new<0.0
-            # fermi nodal cell change, and shoudn't happen for boson ground state either
+            # fermi nodal cell change, and shouldn't happen for boson ground state either
             accept = false
         else        
             accept = ratio >= 1.0 || ratio > rand() 
