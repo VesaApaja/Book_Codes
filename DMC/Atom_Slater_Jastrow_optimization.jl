@@ -189,14 +189,9 @@ end
 
 @inline function EL(R ::MMatrix{dim, N, Float64}, lc ::LinearCombination, jpara ::JastrowParameters)
     
+    local ∇DD
+    
     VL = 0.0 
-
-    ∇DD = Matrix{Float64}(undef,dim,N)
-    for j in 1:N
-        for k in 1:dim
-            ∇DD[k,j] = 0.0
-        end
-    end
     TL = 0.0
     DDsum = 0.0
     for (i,aos) in enumerate(lc.orbitals)        
@@ -205,11 +200,16 @@ end
         # see comments before F(R)           
         DD_occu = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
         TL += -D* DD_occu*( ∇2_up(R, ups) + ∇2_do(R, dos) )
-        ∇DD +=   DD_occu *( F_up(R, ups) + F_do(R, dos) )
+        if i==1
+            # initialize the first time, keeps AD happy
+            ∇DD = DD_occu *( F_up(R, ups) + F_do(R, dos) )
+        else
+            ∇DD .+= DD_occu *( F_up(R, ups) + F_do(R, dos) )
+        end
         DDsum +=  DD_occu
     end
-    TL = TL/DDsum
-    ∇DD = ∇DD/(DDsum*2)
+    TL /= DDsum
+    ∇DD ./= (DDsum*2)
     
     ∇J   = F_J(R, jpara)/2     # ∇ e^J/J = ∇J = F/2
     
@@ -617,36 +617,6 @@ function solve_Δα_wf_params!(walker ::Vector{Walker},
         end        
         wf_params_upd = update_wf_params(wf_params, Δα)
         
-        #force_en_cusp_condition!(wf_params_tmp)
-
-        # normalize 1st lc coeff to 1.0
-        #norm_params!(wf_params, basis_set, Z)
-
-        #= count nodal sign changes
-        nflips = 0
-        
-        @inbounds for iw in 1:Nw
-            R = walker[iw].R
-            
-            ψ_old = φ_T(R, wf_params_orig)
-            ψ_new = φ_T(R, wf_params_tmp)
-            
-            if !isfinite(ψ_new)
-                error("Non-finite trial wave function")
-            end
-            
-            if ψ_old != 0.0 && ψ_new != 0.0 &&
-                signbit(ψ_old) != signbit(ψ_new)
-                nflips += 1
-            end
-        end
-        
-        if nflips > 0
-            @info "Nodal changes" nflips Nw fraction=nflips/Nw
-        end
-        =#
-
-    
         return a_opt, Δα, wf_params_upd
     end
 end
