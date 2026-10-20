@@ -225,11 +225,13 @@ function update_wf_params(a::WfParams, x::AbstractVector)
         @show param
         return a
     end
-    # keep Jastrow β1 and β2 > 0, use a lower limit
-    if param[2]<0.001 || param[3]<0.001
-        @info "Jastrow β1 or β2 too low (<0.001), force min values"
-        param[2] = max(param[2], 0.001)
-        param[3] = max(param[3], 0.001)
+    # keep Jastrow β1 and β2 > 0, use a lower limit (only if they were nonzero to begin with)
+    if a.jpara.param[2]>0 ||  a.jpara.param[3]>0
+        if param[2]<0.001 || param[3]<0.001
+            @info "Jastrow β1 or β2 too low (<0.001), force min values"
+            param[2] = max(param[2], 0.001)
+            param[3] = max(param[3], 0.001)
+        end
     end
 
     new_jpara = JastrowParameters(param)
