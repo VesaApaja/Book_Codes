@@ -10,16 +10,16 @@ using Utilities
 using QMC_Statistics
 
 
-const dim = 3 :: Int64
-const D = (1/2) :: Float64
-const N = 2   :: Int64 # number of particles
+const dim = 3 
+const D:: Float64 = (1/2) 
+const N = 2 # number of particles
 
-const Eexact = (9/2*π^2) ::Float64  # 44.41321980
-const ET = 50.0 :: Float64 # a guess
-const κ = 20.0 :: Float64 # may need adjustment
+const Eexact = (9/2*π^2)   # 44.41321980
+const ET = 50.0  # a guess
+const κ = 20.0   # may need adjustment
   
-const Nwx = 20000 :: Int64
-const Nw_target = 5000 :: Int64
+const Nwx = 20000 
+const Nw_target = 5000 
 
 
 if length(ARGS)==1
@@ -27,7 +27,7 @@ if length(ARGS)==1
 else
     τ_in = 0.001 # default τ
 end
-const τ = τ_in :: Float64
+const τ::Float64 = τ_in 
 const blocksize = floor(Int64,1/(10*τ)) :: Int64 # just an approx
 const accuracy_goal = 0.05
 
@@ -112,7 +112,7 @@ function branch!(walker ::Vector{Walker}, copies ::MVector)
         for inew in 1:copies[iw]-1   # with copies=3 this is 1,2
             iw2 = deads[idead]
             walker[iw2].alive = 1
-            walker[iw2].R = copy(walker[iw].R)
+            copyto!(walker[iw2].R, walker[iw].R)
             idead += 1
             if idead>length(deads)
                 error("cannot branch, outaspace")
