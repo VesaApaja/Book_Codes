@@ -135,17 +135,14 @@ println("Optimized values will be saved to $optfile")
 suffix_ = string(PROGRAM_FILE,"_",atom,"_opt")
 
 const suffix = suffix_ ::String
-const Efile = string("E.",suffix)
 const VMCfile = string("VMC.",suffix)
 
 
 println("="^40)
 @show(suffix)
-println("Energy output file: ",Efile)
 println("   VMC output file: ",VMCfile)
 println("="^40)
 
-rm(Efile, force=true)
 rm(VMCfile, force=true)
 
 # bind Jastrow functions
