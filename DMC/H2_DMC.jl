@@ -20,7 +20,7 @@
 #
 using Printf
 using StaticArrays
-import Distributions: Normal
+using Distributions: Normal
 using Statistics
 using ForwardDiff
 using LinearAlgebra: diag, tr
@@ -35,7 +35,7 @@ using Common: VMC_Params, Walker, branch!
 using LinearOptimization
 using QMC_Statistics
 using Utilities: argparse, num_check_EL, num_check_∇S, output_MCresult
-using VMCstep
+using VMCstep: adjust_step!, vmc_step_H2! as vmc_step! 
 
 
 # parameters
@@ -48,8 +48,8 @@ const D = [1/2, 1/(2*1836.152673426)]
 println("Using $(Threads.nthreads()) threads")
 # seed rng's using time in milliseconds
 base_number = floor(Int, time() * 1000) 
-base_number = 12345
-rngs = [MersenneTwister(base_number + i) for i in 1:Threads.nthreads()]
+#base_number = 12345 # fixed seed for testing
+rngs = [MersenneTwister(base_number + i) for i in 1:Threads.maxthreadid()]
 
 
 
@@ -87,12 +87,12 @@ else
     end
     
     # DMC parameters
-    const τ = τ_in :: Float64
-    const κ = 20.0 :: Float64 # may need adjustment
+    const τ::Float64 = τ_in 
+    const κ::Float64 = 20.0  # may need adjustment
     const accuracy_goal = 0.00001
-    const Nwx = 20000 :: Int64
-    const Nw_target = 5000 :: Int64
-    const blocksize = floor(Int64,1/τ) :: Int64 # just an approx
+    const Nwx::Int = 20000 
+    const Nw_target::Int = 5000 
+    const blocksize::Int = floor(Int64,1/τ) # just an approx
     const Ntherm = floor(Int64,10/τ)
     
     @show blocksize
@@ -732,7 +732,7 @@ function main()
     # =====
     println(("="^80)*"\n   DMC\n"*("=")^80)
     # drift; separate F for each thread
-    Fs = [MMatrix{dim, N, Float64}(undef) for i in 1:Threads.nthreads()]
+    Fs = [MMatrix{dim, N, Float64}(undef) for i in 1:Threads.maxthreadid()]
 
     # check drift
     vmc_params = [VMC_Params(0,0,1.0), VMC_Params(0,0,0.2)]
@@ -759,6 +759,8 @@ function main()
     
     Ntry = Threads.Atomic{Int64}(0)
     Nacc = Threads.Atomic{Int64}(0)
+
+    Rolds = [MMatrix{dim, N, Float64}(undef) for i in 1:Threads.maxthreadid()]
     
     # init measurements
     Estat = init_stat(1, blocksize)
@@ -766,13 +768,14 @@ function main()
 
     while true
         Threads.@threads for iw in collect(alives) # vector from a set for threads
-            #@inbounds for iw in alives
-            rng = rngs[Threads.threadid()]
-            F = Fs[Threads.threadid()]
+            tid = Threads.threadid()
+            rng = rngs[tid]
+            F   = Fs[tid]
+            Rold = Rolds[tid]
             
             ELold = walker[iw].E
             Rnew = walker[iw].R # alias
-            Rold  = copy(Rnew) # copy
+            copyto!(Rold, Rnew) # copy 
             φTold = walker[iw].Ψ
             #
             diffusion_drift_step!(Rnew, F, x->ϕ(x, params))
