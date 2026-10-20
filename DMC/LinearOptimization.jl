@@ -1,30 +1,72 @@
-# A few linearptimization routines, some copied from QMC_LinearOpt_*.jl
+# A few linear optimization routines, some copied from QMC_LinearOpt_*.jl
 
 module LinearOptimization
 using StaticArrays
 using Common
-using LinearAlgebra: eigen
+using LinearAlgebra: eigen, Symmetric
 using Printf
+
 export solve_Δα!, update_a_opt
 
 
+# workspace
+mutable struct t_ws
+    H :: Matrix{Float64}
+    S :: Matrix{Float64}
+    ΨiΨjEL :: Matrix{Float64}
+    ΨiELj :: Matrix{Float64}
+    ΨiΨj  :: Matrix{Float64}
+    Ψi    :: Vector{Float64}
+    ΨiEL :: Vector{Float64}
+    ELi :: Vector{Float64}
+    function t_ws(npara::Int)
+        new(
+            Matrix{Float64}(undef,npara+1,npara+1),
+            Matrix{Float64}(undef,npara+1,npara+1),
+            Matrix{Float64}(undef,npara,npara),
+            Matrix{Float64}(undef,npara,npara),
+            Matrix{Float64}(undef,npara,npara),
+            Vector{Float64}(undef,npara),
+            Vector{Float64}(undef,npara),
+            Vector{Float64}(undef,npara)
+        )
+    end
+end
 
-H = Matrix{Float64}(undef,1,1)
-S = Matrix{Float64}(undef,1,1)
-ΨiΨjEL = Matrix{Float64}(undef,1,1)
-ΨiELj = Matrix{Float64}(undef,1,1)
-ΨiΨj  = Matrix{Float64}(undef,1,1)
-Ψi =  Vector{Float64}(undef,1)
-ΨiEL = Vector{Float64}(undef,1)
-ELi = Vector{Float64}(undef,1)
+const ws = t_ws(1)
 
+function ensure_ws!(ws::t_ws, npara::Int)
+    if size(ws.H) != (npara+1, npara+1)
+        @info "LinearOptimization: allocating matrices"
+        ws.H = Matrix{Float64}(undef,npara+1,npara+1)
+        ws.S = Matrix{Float64}(undef,npara+1,npara+1)
+        ws.ΨiΨjEL = Matrix{Float64}(undef,npara,npara)
+        ws.ΨiELj = Matrix{Float64}(undef,npara,npara)
+        ws.ΨiΨj = Matrix{Float64}(undef,npara,npara)
+        ws.Ψi = Vector{Float64}(undef,npara)
+        ws.ΨiEL = Vector{Float64}(undef,npara)
+        ws.ELi = Vector{Float64}(undef,npara)
+    end
+    return ws
+end
 
 function get_H_S!(walker, 
                   Ψ_is ::Matrix{Float64},
                   EL_is ::Matrix{Float64},
-                  ELs ::Vector{Float64})
-    global H, S, ΨiΨjEL, ΨiELj, ΨiΨj, Ψi, ΨiEL, ΨELi, ELi
-    npara = size(Ψ_is,1)
+                  ELs ::Vector{Float64},
+                  ws::t_ws = ws)
+    
+    npara::Int = size(Ψ_is,1)
+    ws = ensure_ws!(ws, npara)
+    H = ws.H
+    S = ws.S
+    ΨiΨjEL = ws.ΨiΨjEL
+    ΨiELj = ws.ΨiELj 
+    ΨiΨj = ws.ΨiΨj
+    Ψi = ws.Ψi
+    ΨiEL = ws.ΨiEL
+    ELi = ws.ELi
+    
     Nw = length(walker)
     
     # averages in Eqs. (53), (54)
@@ -43,8 +85,8 @@ function get_H_S!(walker,
             error("LinearOptimization walker[iw].Ψ=0; set the walker trial wave function value")
         end
 
-        Ψ_i_R = Ψ_is[:,iw]
-        EL_i_R = EL_is[:,iw]
+        Ψ_i_R = @view Ψ_is[:,iw]
+        EL_i_R = @view EL_is[:,iw]
         EL_R = ELs[iw]
         Ψ_0_R = walker[iw].Ψ
 
@@ -65,12 +107,12 @@ function get_H_S!(walker,
     end
     mul = 1/Nw
     
-    ΨiΨjEL *= mul
-    ΨiΨj *= mul
-    ΨiELj *= mul        
-    Ψi *= mul
-    ΨiEL *= mul
-    ELi *= mul
+    ΨiΨjEL .*= mul
+    ΨiΨj .*= mul
+    ΨiELj .*= mul        
+    Ψi .*= mul
+    ΨiEL .*= mul
+    ELi .*= mul
     EL *= mul
     # Toulouse-Umrigar J. Chem. Phys. 2008, Eqs. (22), (23), and (24)
     H .= 0.0
@@ -93,48 +135,42 @@ end
 
 
 function solve_Δα!(walker, Ψ_is ::Matrix{Float64}, EL_is ::Matrix{Float64}, ELs ::Vector{Float64},
-                   a_opt ::Float64, npara ::Int64, nonlin ::Vector{Int64}, Δα:: MVector)
-
-    global H, S, ΨiΨjEL, ΨiELj, ΨiΨj, Ψi, ΨiEL, ΨELi, ELi
-    if size(H,1)!=npara+1
-
-        H = Matrix{Float64}(undef,npara+1,npara+1)
-        S = Matrix{Float64}(undef,npara+1,npara+1)
-        ΨiΨjEL = Matrix{Float64}(undef,npara,npara)
-        ΨiELj = Matrix{Float64}(undef,npara,npara)
-        ΨiΨj  = Matrix{Float64}(undef,npara,npara)
-        Ψi =  Vector{Float64}(undef,npara)
-        ΨiEL = Vector{Float64}(undef,npara)
-        ELi = Vector{Float64}(undef,npara)
-    end
-
+                   a_opt ::Float64, npara ::Int64, nonlin ::Vector{Int64}, Δα:: MVector,
+                    ws::t_ws = ws)
+    
     get_H_S!(walker, Ψ_is, EL_is, ELs)
+    H = ws.H
+    S = ws.S
+    ΨiΨjEL = ws.ΨiΨjEL
+    ΨiELj = ws.ΨiELj 
+    ΨiΨj = ws.ΨiΨj
+    Ψi = ws.Ψi
+    ΨiEL = ws.ΨiEL
+    ELi = ws.ELi
     
     # stabilize (could also stabilize nonlinear params more)
     for i ∈ 2:npara+1
         H[i,i] += a_opt
     end
-    # same as H[diagind(H)[2:npara+1] += a_opt
     #
-    #
-    # This is sometimes left out, but it stabilized the generalized eigenvalue problem for large a_opt 
+    # This is sometimes left out; stabilizes the generalized eigenvalue problem for large a_opt 
     
-    #if a_opt>1000.0
-    #    for i ∈ 2:npara+1
-    #        S[i,i] += a_opt
-    #    end
-    #end
-    
-    
-    F = eigen(H, S) 
+    if a_opt>1000.0
+        for i ∈ 2:npara+1
+            S[i,i] += a_opt
+        end
+    end
+        
+    F = eigen(H, S)
     eigval = real(F.values)
+    eigv = real(F.vectors)
     
     k = argmin(abs.(eigval .- H[1,1])) # "physically reasonable eigenvalue"
     # eigen: "The kth eigenvector can be obtained from the slice F.vectors[:, k]."
-    eigv = real(F.vectors)
+    
     #     
     # parameter changes, keep also the 1st element
-    Δα_all = eigv[:,k] # this is c*[1,Δα], but scale Δα to get better convergence for nonlinear parameters
+    Δα_all = @view eigv[:,k] # this is c*[1,Δα], but scale Δα to get better convergence for nonlinear parameters
     
     # Toulouse-Umrigar 2007
     # ======================
