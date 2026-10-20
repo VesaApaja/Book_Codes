@@ -11,10 +11,15 @@ He STO_Dzeta
 α =    -0.0462840904
 β =     0.3314482651
 α12 =     1.0000000000
-# lc coefficients
-coeff =    1.0000000000 
- orbitals = 10 10 
-coeff =    0.0444236355 
- orbitals = 10 20 
-# raw output of wf_params
- 1.00000  0.04442  1.93404  7.13060  1.00000  0.02207  1.32908  6.30595  2.51347  0.73618 -0.04628  0.33145  1.00000 
+
+# HE ground state: 1S even (L=0, S=0, even parity)
+# 2s2 + 1s12s1
+
+csf = ground
+coeff = 1.0
+det = 1.0 : 1s+ 1s-
+
+csf = excited_1s2s
+coeff = 0.05
+det = 0.7071067811865476 : 1s+ 2s-
+det = 0.7071067811865476 : 2s+ 1s-
