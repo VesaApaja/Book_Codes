@@ -24,17 +24,21 @@ This directory contains various DMC programs and related utilities.
 		- Be atom using STO basis set, run \		
 		 `julia Atom_Slater_Jastrow.jl atom=Be basis_set=STO`		
 		- Input data is in file `atom_data/Be` and the orbital parameters in file `atom_data/Be_STO`
-			- Only H, He, Be, B and Ne 
+			- Only H, He, Be, B and Ne data is present
 			- orbital parameter file contains STO coefficients and exponents
 			for each orbital (1s, 2s, 2p ...),
 			Jastrow factor parameters, and finally 
-			the linear combination coefficients (`lc coefficients`)\
-			where `coeff` is the linear coefficient of the orbitals listed on the next line,
+			the CSF data \
+			where `coeff` is the (optimized) linear coefficient of the orbitals listed on the next line,
 			for example\
-			`orbitals = 10 10 21 21`\
-			are the `lm` quantum numbers of 1s, 1s, 2p, and 2p orbitals.\
+			`coeff =-0.3942488462940288`\
+			is the multiplier of the linear combination of Slater determinant \
+			listed on the following lines beginning with `det = ` ,\
+			for example \
+			`det = 0.5773502691896258 : 1s+ 1s- 2py+ 2py-`\
+			the fixed multiplier and the Slater determinant.\
 			If the input file is a result of optimization, it contains also `raw output of wf_params` (optimal wave function 
-			parameters) and the estimated energy computed in optimization.
+			parameters).
 
         - Similarly for double-zeta STO basis (basis_set=STO_Dzeta) 
 		and triple-zeta basis (basis_set=STO_Tzeta) 
