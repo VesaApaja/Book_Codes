@@ -2,6 +2,8 @@ module Utilities
 using Printf
 using StaticArrays
 
+using Common:WfParams
+
 export output_MCresult, num_check_EL, num_check_∇S, metro
 export show_vec
 export argparse
@@ -25,40 +27,58 @@ end
     return sqrt(s)
 end
 
-function print_params(para,txt=""::String)
-    @printf("%10s ",txt)
-    try
-        for cc in para.lc.coeffs
-            @printf("%8.5f ", cc)
-        end
-        nl = []
-        for aos in para.lc.orbitals
-            for ao in aos
-                if [ao.n, ao.l] ∉ nl
-                    push!(nl,[ao.n, ao.l]) 
-                    for ζ in ao.exponents
-                        @printf("%8.5f ",ζ)
-                    end
-                    for c in ao.coefficients
-                        @printf("%8.5f ",c)
-                    end
+# Print the independent parameters of a wave function
+function print_params(para::WfParams, txt::AbstractString="")
+    @printf("%20s| ", txt)
+
+    lc = para.lc
+
+    # Independent CSF coefficients (first is fixed)
+    for c in lc.csf_coeffs[2:end]
+        @printf("%9.5f ", c)
+    end
+
+    # Unique orbital parameters
+    nl = Set{Tuple{Int,Int}}()
+
+    for aos in lc.orbitals
+        for ao in aos
+            key = (ao.n, ao.l)
+
+            if key ∉ nl
+                push!(nl, key)
+
+                for ζ in ao.exponents
+                    @printf("%9.5f ", ζ)
+                end
+
+                for c in ao.coefficients
+                    @printf("%9.5f ", c)
                 end
             end
         end
-        for p in para.jpara.param
-            @printf("%8.5f ",p)
-        end
-        println()
-    catch        
-        try            
-            for p in para
-                @printf("%8.5f ",p)
-            end
-            println()
-        catch
-            println("can't use print_params")
-        end
     end
+
+    # Jastrow parameters
+    for p in para.jpara.param
+        @printf("%9.5f ", p)
+    end
+
+    println()
+    return nothing
+end
+
+
+# Print a flat parameter vector, e.g. Δα
+function print_params(para::AbstractVector, txt::AbstractString="")
+    @printf("%20s| ", txt)
+
+    for p in para
+        @printf("%9.5f ", p)
+    end
+
+    println()
+    return nothing
 end
 
 
@@ -171,7 +191,7 @@ function num_check_EL(R ::MMatrix, EL_in, Ψ ::Function, V ::Function)
             psi_p = Ψ(Rloc)
             if psi_p*Ψ_in<0
                 Rloc = copy(R)
-                println("sign change, skip")
+                @info "sign change, skip"
                 break
             end
             
@@ -179,7 +199,7 @@ function num_check_EL(R ::MMatrix, EL_in, Ψ ::Function, V ::Function)
             psi_m = Ψ(Rloc)
             if psi_m*Ψ_in<0
                 Rloc = copy(R)
-                println("sign change, skip")
+                @info "sign change, skip"
                 break
             end
             Rloc[k,i] += h
