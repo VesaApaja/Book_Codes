@@ -1,12 +1,21 @@
+#
+# Optimization of basis set parameters
+# For example, in order to optimize B atom using triple-zeta STO basis, run
+# 
+# julia Atom_Slater_Jastrow_optimization.jl atom=B basis_set=STO_Tzeta
+#
+#    raw output to file Eopt_B_STO_Tzeta
+#
+#    optimized input is stored to file atom_data/B_STO_Tzeta_opt,
+#    which can be copied to atom_data/B_STO_Tzeta and used as input.
+#
+
 using Printf
-#using Distributions
 using StaticArrays
 using Statistics
 using ForwardDiff: gradient as ADgrad 
-#using ReverseDiff: gradient as ADgrad 
-#import LinearAlgebra: norm
 # dot product:
-import LinearAlgebra: ⋅  
+using LinearAlgebra: ⋅  
 
 # slightly faster (?) norm 
 @inline norm(x) = sqrt(sum(abs2,x))
@@ -21,21 +30,23 @@ using QMC_Statistics
 using SlaterDeterminants
 using LinearOptimization
 using STOOrbitals
+using CSF
 
 # for testing purposes only:
 #using Random
 #Random.seed!(1234)
+#@warn "using fixed random seed"
 
 
 
 possible_args=["atom","basis_set"]
 arg_dict = argparse(possible_args)
 # use command line values or defaults
-atom = get(arg_dict, "atom", "")
-basis_set = get(arg_dict, "basis_set", "STO")
+const atom = get(arg_dict, "atom", "")
+const basis_set = get(arg_dict, "basis_set", "STO")
 
 
-atom_data = parse_atom_data(atom)
+const atom_data = parse_atom_data(atom)
 
 # Print atom data
 println("Atom: ", atom_data.atom)
@@ -54,31 +65,43 @@ println("Jastrow parameters:")
 @show jpara.param
 
 #sanity check
-if jpara.param[4] == 0.0
-    println("Warning: You have α12=0.0")
-end
 if jpara.param[2] == 0.0 || jpara.param[3] == 0.0
-    println("Warning: You have β1 or β2 equal to 0.0")
+    @warn("You have either β1 or β2 equal to 0.0")
 end
 
+if jpara.param[2] == 0.0 && jpara.param[3] == 0.0
+    error("You have β1 = β2 = 0.0, long-range Jastrow factor will explode.")
+end
+
+# keep α=0 to not contaminate STO basis 
+jpara.param[1] == 0.0
+# keep α12 = 1.0 because of cusp condition
+jpara.param[4] == 1.0
 
 
 # Select atomic orbital functions
 SlaterDeterminants.init(basis_set)
 
-all_aos = parse_basis_set_data(atom, basis_set)
+aos = parse_basis_set_data(atom, basis_set)
 
 
 
 # Read lc coefficients and nl-combinations from file  
 cnls = parse_coeffients_data(atom, basis_set)
 
-# create linear combination of ao's 
-lc, npara_, nonlin_, lc_ups_, lc_dos_ = set_linear_combination_of_orbitals(atom_data, all_aos, cnls)
+# create linear combination of ao's
+csfs = read_csf_specs( "atom_data/"*atom*"_"*basis_set)
+
+lc_, npara_, nonlin_, lc_ups_, lc_dos_ =
+    set_linear_combination_of_orbitals(
+        atom_data, aos, csfs
+    )
 
 # fix lists of up and down orbitals
+const lc = lc_
 const lc_ups = lc_ups_
 const lc_dos = lc_dos_
+
 # sanity check
 for aos in lc.orbitals
     if length(aos) != N
@@ -86,6 +109,15 @@ for aos in lc.orbitals
         error("lc.orbitals must have length N to accommondate all electrons")
     end
 end
+
+# more checks
+for (i, det) in enumerate(lc.orbitals)
+    println("\nDeterminant $i, coefficient = $(det_coeff(lc, i))")
+    for ao in det
+        println("  $(ao.orbital_type)  $(ao.spin)")
+    end
+end
+
 
 
 # Jastrow parameters
@@ -125,9 +157,6 @@ const s = spinfactor(atom_data.Nup, atom_data.Ndo)
 
 # collect parameters to one struct
 wf_params = WfParams(lc, jpara)
-# erase temporaries
-lc = nothing
-jpara = nothing
 
 
 println(npara," parameters in φ_T")
@@ -138,12 +167,16 @@ println(length(nonlin)," nonlinear parameters in φ_T")
 @inline function E_correlated(walker ::Vector{Walker}, φ_T ::Function, wf_params_new::WfParams)
     E = 0.0        
     r = 0.0
+    r2 = 0.0
     for w ∈ walker
         wratio = φ_T(w.R, wf_params_new)^2 / w.Ψ^2
         E += EL(w.R, wf_params_new) * wratio
         r += wratio
+        r2 += wratio^2
     end
-    E = E/r
+    Ecorr = E/r
+    Neff = r^2 / r2
+    return Ecorr, Neff
 end
 
 
@@ -168,7 +201,7 @@ end
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]       
         # see comments before F(R)           
-        DD_occu = lc.coeffs[i] * D_up(R, ups) * D_do(R, dos)
+        DD_occu = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
         TL += -D* DD_occu*( ∇2_up(R, ups) + ∇2_do(R, dos) )
         ∇DD +=   DD_occu *( F_up(R, ups) + F_do(R, dos) )
         DDsum +=  DD_occu
@@ -236,7 +269,7 @@ function force_en_cusp_condition!(wf_params ::WfParams)
     x  =  (Z-α)*sum(cs)/sum(cs.*ζs)
     println("cusp condition factor $x")
     if x < 0.0
-        println("Warning: failed to enforce e-n cusp condition, would lead to ζ<0")
+        @warn "failed to enforce e-n cusp condition, would lead to ζ<0"
         @show  sum(cs.*ζs) - (Z-α)*sum(cs)
         return
     end
@@ -268,17 +301,15 @@ end
     for (i,aos) in enumerate(lc.orbitals)
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]
-        DD += lc.coeffs[i] * D_up(R, ups) * D_do(R, dos)
+        DD += det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
     end
-    if isapprox(DD,0.0)
-        error("φ_T: DD = 0, probably bad orbitals")
-    end
+    isfinite(DD) || error("φ_T: non-finite determinant sum")
     φ_T = φ_T_J(R, jpara) * DD
 end
 
 
 # version with default parameters
-@inline @fastmath function φ_T(R ::MMatrix{dim, N, Float64}) 
+@inline @fastmath function φ_T(R ::MMatrix{dim, N, Float64})
     return φ_T(R, wf_params)
 end
 
@@ -298,169 +329,234 @@ function G_i_numerical(R ::MMatrix{dim, N, Float64}, wf_params ::WfParams, G :: 
 end
 
 
-# AD for both Ψ_i and EL_i computation; just different input G  
-@inline function G_i_AD(R ::MMatrix{dim, N, Float64}, wf_params ::WfParams, G ::Function)
+@inline function G_i_AD(
+    R::MMatrix{dim,N,Float64},
+    wf_params::WfParams,
+    G::Function
+) where {dim,N}
 
-    G_J(x) = G(R, wf_params.lc, x)
-    G_S(x) = G(R, x, wf_params.jpara)
-   
-    
-    # Gradient wrt. lc.coeffs and parameters in each AtomicOrbital 
+    lc = wf_params.lc
+
+    # --------------------------------------
+    # AD with respect to LC parameters
+    # --------------------------------------
+
     function gradient_lc(lc)
-        para_concat = Float64[]
-        append!(para_concat, lc.coeffs)  # linear expansion coefficients
-        
-        nl = []
+
+        # Exclude the fixed reference CSF coefficient
+        ncsf_free = length(lc.csf_coeffs) - 1
+        para_concat = copy(lc.csf_coeffs[2:end])
+
+        # Identify the unique orbital parameter sets
+        keys = Tuple{Int,Int}[]
+        lens = Int[]
+
         for aos in lc.orbitals
             for ao in aos
-                if [ao.n, ao.l] ∉ nl
-                    push!(nl,[ao.n, ao.l])
+                key = (ao.n, ao.l)
+
+                if key ∉ keys
+                    push!(keys, key)
+                    push!(lens, length(ao.exponents))
+
                     append!(para_concat, ao.exponents)
                     append!(para_concat, ao.coefficients)
                 end
             end
         end
-        
+
         gradients = ADgrad(para_concat) do x
-            pos = 1
-            len = length(lc.coeffs)
-            coeffs = x[pos:pos+len-1]
-            pos += len
-            
-            nl = []
-            new_aolist = AtomicOrbital[]                
-            for aos in lc.orbitals                
-                for ao in aos
-                    if [ao.n, ao.l] ∉ nl
-                        push!(nl,[ao.n, ao.l])
-                        len = length(ao.exponents)    # coefficient have same len                    
-                        new_exponents = x[pos:pos+len-1]
-                        pos += len
-                        new_coefficients = x[pos:pos+len-1]
-                        pos += len
-                        new_ao = AtomicOrbital(ao.atom, ao.orbital_type, ao.n, ao.l, new_exponents, new_coefficients, ao.spin)
-                        push!(new_aolist, new_ao)
-                    end
-                end
+
+            # Reconstruct the CSF coefficients
+            csf_coeffs = vcat(
+                lc.csf_coeffs[1:1],
+                x[1:ncsf_free]
+            )
+
+            pos = ncsf_free + 1
+
+            # Reconstruct unique orbital parameters
+            # Shared between all occurrences of each orbital
+            radial = Dict{
+                Tuple{Int,Int},
+                Tuple{Vector{eltype(x)},Vector{eltype(x)}}
+            }()
+
+            for (key, len) in zip(keys, lens)
+
+                new_exponents = x[pos:pos+len-1]
+                pos += len
+
+                new_coefficients = x[pos:pos+len-1]
+                pos += len
+
+                radial[key] = (new_exponents, new_coefficients)
             end
-            # lc may have same ao multiple times, and there are fewer parameters to derive
-            # Go through all orbitals in lc and pick their derived versions from  new_aolist
-            orbitals = []
-            for aos in lc.orbitals
-                new_aos = AtomicOrbital[]      
-                for ao in aos
-                    # find the derived ao
-                    for (this_nl, this_ao) in zip(nl,new_aolist)                        
-                        if ao.n == this_nl[1] && ao.l == this_nl[2]
-                            # pick *only* parameters from this_ao! (spin may differ)                        
-                            new_ao = AtomicOrbital(ao.atom, ao.orbital_type, ao.n, ao.l, this_ao.exponents, this_ao.coefficients, ao.spin)
-                            push!(new_aos, new_ao)
-                            break
-                        end
-                    end                        
-                end
-                push!(orbitals, new_aos)
-            end
-            new_lc = LinearCombination(orbitals, coeffs)
-            return G_S(new_lc)
+
+            @assert pos == length(x) + 1
+
+            # Reconstruct every determinant's orbitals
+            orbitals = [
+                [
+                    AtomicOrbital(
+                        ao.atom,
+                        ao.orbital_type,
+                        ao.n,
+                        ao.l,
+                        radial[(ao.n,ao.l)][1],
+                        radial[(ao.n,ao.l)][2],
+                        ao.spin
+                    )
+                    for ao in aos
+                ]
+                for aos in lc.orbitals
+            ]
+
+            # The CSF-to-determinant mapping stays fixed
+            new_lc = LinearCombination(
+                orbitals,
+                csf_coeffs,
+                lc.det_csf,
+                lc.det_weight
+            )
+
+            return G(R, new_lc, wf_params.jpara)
         end
+
         return gradients
     end
 
-    # wrapper function to differentiate wrt. struct fields
-    function G_params(param)
-        new_jpara = JastrowParameters(param)
-        return G_J(new_jpara)
+    # --------------------------------------
+    # AD with respect to Jastrow parameters
+    # --------------------------------------
+
+    grad_lc = gradient_lc(lc)
+
+    grad_jpara = ADgrad(wf_params.jpara.param) do x
+        new_jpara = JastrowParameters(x)
+        G(R, lc, new_jpara)
     end
-    # Gradient wrt. jpara
-    function gradient_jpara(jpara::JastrowParameters)
-        param = jpara.param
-        gradients = ADgrad(G_params, param)
-        return gradients
-    end
-    
-    grad_lc = gradient_lc(wf_params.lc)   
-    grad_jpara  = gradient_jpara(wf_params.jpara)
-    
-    G_i = reduce(vcat, [grad_lc, grad_jpara]) # keep order!
-    G_i
+
+    # Parameter order:
+    # independent CSF coefficients,
+    # orbital exponents and coefficients,
+    # Jastrow parameters
+    return vcat(grad_lc, grad_jpara)
 end
 
+function save_parameters(outfile::String, wf_params::WfParams)
 
-function save_parameters(outfile ::String, wf_params ::WfParams)
-    #println("Saving parameters to file ",outfile)
-    open(outfile,"w") do f
-        println(f,atom*" "*basis_set)
-        println(f,"*")
-        order = ["1s","2s","2p","3s","3p","4s","3d","4p","5s","4d","5p","6s","4f","5d","6p"]
+    lc = wf_params.lc
 
-        
+    open(outfile, "w") do f
+
+        println(f, atom, " ", basis_set)
+        println(f, "*")
+
+        order = [
+            "1s", "2s", "2p", "3s", "3p",
+            "4s", "3d", "4p", "5s", "4d",
+            "5p", "6s", "4f", "5d", "6p"
+        ]
+
+        # ---------------------------------
+        # Orbital parameters
+        # ---------------------------------
+
         for orbital in order
             found = false
-            for aos in wf_params.lc.orbitals
+
+            for aos in lc.orbitals
                 for ao in aos
-                    if occursin(orbital, ao.orbital_type) # covers 2px etc.
-                        mytype = ao.orbital_type[2]
+
+                    # Also matches 2px, 2py, 2pz
+                    if startswith(ao.orbital_type, orbital)
+
                         len = length(ao.exponents)
-                        println(f, len,"  ",mytype)
+                        mytype = orbital[end]
+
+                        println(f, len, "  ", mytype)
+
                         for i in 1:len
-                            @printf(f,"%15.10f %15.10f\n", ao.exponents[i], ao.coefficients[i])
+                            @printf(f, "%15.10f %15.10f\n",
+                                    ao.exponents[i],
+                                    ao.coefficients[i])
                         end
+
                         found = true
                         break
                     end
-                    if found
-                        break
-                    end
                 end
-                if found
-                    break
-                end
-            end            
-        end
-        println(f,"*")
-        println(f,"# Jastrow params")        
-        @printf(f,"%s %15.10f\n","α = ",wf_params.jpara.param[1])
-        @printf(f,"%s %15.10f\n","β1 = ",wf_params.jpara.param[2])
-        @printf(f,"%s %15.10f\n","β2 = ",wf_params.jpara.param[3])
-        @printf(f,"%s %15.10f\n","α12 = ",wf_params.jpara.param[4])
 
-        println(f,"# lc coefficients")        
-        for (cc, aos) in zip(wf_params.lc.coeffs, wf_params.lc.orbitals)
-            @printf(f,"coeff = %15.10f \n ",cc)
-            @printf(f,"orbitals = ")
-            for ao in aos
-                @printf(f,"%d%d ",ao.n, ao.l)
+                found && break
             end
-            @printf(f,"\n")
         end
 
-        
-        # raw print all wf_params
-        println(f,"# raw output of wf_params")
-        for cc in wf_params.lc.coeffs
-            @printf(f,"%8.5f ", cc)
+        println(f, "*")
+
+        # ---------------------------------
+        # Jastrow parameters
+        # ---------------------------------
+
+        println(f, "# Jastrow params")
+
+        α, β1, β2, α12 = wf_params.jpara.param
+
+        @printf(f, "α = %15.10f\n", α)
+        @printf(f, "β1 = %15.10f\n", β1)
+        @printf(f, "β2 = %15.10f\n", β2)
+        @printf(f, "α12 = %15.10f\n", α12)
+
+        # ---------------------------------
+        # Optimized CSFs
+        # ---------------------------------
+
+        write_optimized_csfs(f, csfs, lc)
+
+        # ---------------------------------
+        # Raw wave-function parameters
+        # ---------------------------------
+
+        println(f)
+        println(f, "# raw output of wf_params")
+
+        # Independent CSF coefficients
+        for c in lc.csf_coeffs
+            @printf(f, "%8.5f ", c)
         end
-        nl = []
-        for aos in wf_params.lc.orbitals
+
+        # Unique orbital parameters
+        seen = Set{Tuple{Int,Int}}()
+
+        for aos in lc.orbitals
             for ao in aos
-                if [ao.n, ao.l] ∉ nl
-                    push!(nl,[ao.n, ao.l]) 
+                key = (ao.n, ao.l)
+
+                if key ∉ seen
+                    push!(seen, key)
+
                     for ζ in ao.exponents
-                        @printf(f,"%8.5f ",ζ)
+                        @printf(f, "%8.5f ", ζ)
                     end
+
                     for c in ao.coefficients
-                        @printf(f,"%8.5f ",c)
+                        @printf(f, "%8.5f ", c)
                     end
                 end
             end
         end
+
+        # Jastrow parameters
         for p in wf_params.jpara.param
-            @printf(f,"%8.5f ",p)
+            @printf(f, "%8.5f ", p)
         end
-        println(f,"")
+
+        println(f)
     end
+
+    return nothing
 end
+
 
 function thermalize(walker ::Vector{Walker}, nsteps ::Int64, vmc_params ::VMC_Params)
     # thermalize
@@ -498,55 +594,108 @@ function solve_Δα_wf_params!(walker ::Vector{Walker},
                              fix_fact ::MVector,
                              a_opt ::Float64,
                              Δα ::MVector,
-                             wf_params ::WfParams)
+                             wf_params ::WfParams) 
 
-    Nw = length(walker)
-    npara = length(Δα)
-    wf_params_orig = copy(wf_params)
-    wf_params_tmp  = copy(wf_params)
-    while true
+    Nw::Int = length(walker)
+    npara::Int = length(Δα)
+
+    for attempt in 1:30
         # ************************************************************
         solve_Δα!(walker, Ψ_is, EL_is, ELs, a_opt, npara, nonlin, Δα)
         # ************************************************************
-        # Add a small random variation
-        #Δα .+= (rand(npara).-0.5)./(Nw^2) 
+
         # possibly fix some parameters
         Δα .*= fix_fact
 
-       
-        
         mα = maximum(abs.(Δα))
-        if mα>1e-1
-            # too large step
+        if mα>1e-2
+            # too large change in parameters
             a_opt *= 2.0
             continue
         end        
-        #print_params(Δα,"Δα")        
-        wf_params_tmp = update_wf_params(wf_params_orig, Δα)
+        wf_params_upd = update_wf_params(wf_params, Δα)
         
         #force_en_cusp_condition!(wf_params_tmp)
 
-        wf_params_tmp = norm_params!(wf_params_tmp, basis_set, Z)
+        # normalize 1st lc coeff to 1.0
+        #norm_params!(wf_params, basis_set, Z)
 
-        #print_params(wf_params_tmp,"wf_params_tmp")
-
-        ok = true
+        #= count nodal sign changes
+        nflips = 0
+        
         @inbounds for iw in 1:Nw
-            if φ_T(walker[iw].R, wf_params_tmp) < 0.0
-                # BAD
-                println("φ_T changed sign (nodal cell changed or negative boson wf)")
-                # undo update
-                wf_params_tmp = copy(wf_params_orig)
-                a_opt *=  2.0                            
-                ok = false
-                break
-            end                        
+            R = walker[iw].R
+            
+            ψ_old = φ_T(R, wf_params_orig)
+            ψ_new = φ_T(R, wf_params_tmp)
+            
+            if !isfinite(ψ_new)
+                error("Non-finite trial wave function")
+            end
+            
+            if ψ_old != 0.0 && ψ_new != 0.0 &&
+                signbit(ψ_old) != signbit(ψ_new)
+                nflips += 1
+            end
         end
-        if !ok; continue; end
-        # all well, can use this 
-        break                
+        
+        if nflips > 0
+            @info "Nodal changes" nflips Nw fraction=nflips/Nw
+        end
+        =#
+
+    
+        return a_opt, Δα, wf_params_upd
     end
-    return a_opt, Δα, wf_params_tmp
+end
+
+function find_a_opt(a_opts, E_opts)
+
+    # Sort by increasing a_opt
+    p = sortperm(a_opts)
+    aa = Float64.(a_opts[p])
+    EE = Float64.(E_opts[p])
+
+    all(isfinite, aa) && all(>(0), aa) ||
+        error("Invalid a_opts")
+    all(isfinite, EE) ||
+        error("Invalid E_opts")
+
+    length(unique(aa)) == 3 ||
+        error("Need three distinct a_opts")
+
+    imin = argmin(EE)
+    a_best = aa[imin]
+
+    # Interpolate only if the middle point
+    # has lower energy than both endpoints.
+    if imin != 2
+        return a_best
+    end
+
+    # Work in logarithmic coordinates,
+    # centered at the middle point.
+    x1 = log(aa[1] / aa[2])
+    x3 = log(aa[3] / aa[2])
+
+    s1 = (EE[1] - EE[2]) / x1
+    s3 = (EE[3] - EE[2]) / x3
+
+    A = (s3 - s1) / (x3 - x1)
+    B = s1 - A*x1
+
+    if !isfinite(A) || A <= 0
+        return a_best
+    end
+
+    xmin = -B / (2A)
+
+    # Do not extrapolate outside the bracket.
+    if !isfinite(xmin) || !(x1 < xmin < x3)
+        return a_best
+    end
+
+    return aa[2] * exp(xmin)
 end
 
 function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params) ::Tuple{Float64, Float64}
@@ -582,9 +731,6 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params) ::Tuple{Floa
         if Estat.finished            
             Eb_ave, Eb_std, E_inputvar2, Nb = get_stats(Estat)            
             @printf("VMC <E> = %.10f +/- %.10f \n", Eb_ave, Eb_std)
-            
-            
-            
             # exit VMC
             if (Eb_std<0.001 && Nb>5) || Nb==20
                 output_MCresult(Eb_ave, Eb_std)
@@ -619,6 +765,8 @@ function main()
     Nw = 5
     print_params(wf_params,"wf_params")
     walker = init_this(Nw,Nw)
+    (walker, _, _) = thermalize(walker, 500, vmc_params)
+
     println("Checking numerically EL against φ_T")
     
     for i in 1:Nw
@@ -648,23 +796,21 @@ function main()
     fix_fact = @MVector ones(npara)
 
     
-    # fix_fact[length(wf_params.lc.coeffs)+1] = 0.0  # fix 1s exponent
-    #fix_fact[end-3] = 0.0 # fix Jastrow α
-    fix_fact[end] = 0.0 # fix Jastrow α12
+    @info "Fixing Jastrow α=0 and α12=1.0" 
+    fix_fact[end-3] = 0.0 # fix Jastrow α to prevent contaminating STO exponents
+    fix_fact[end] = 0.0 # fix Jastrow α12, it's determined by the cusp condition
     
     if occursin("EMA",basis_set)
+        @info "EMA, fixing nonlinear parameters" 
         # fix exponents for EMA
         fix_fact[nonlin] .= 0.0
     end
 
-    Nw = 1000
+    Nw = 100 # very small set to begin with, tweak if necessary
     
     while true
-        Nw = Int(floor(Nw*1.5))
-        if Nw>500000
-            break
-        end
-        # using @MMatrix for large Nw may cause ERROR: LoadError: syntax: expression too large
+        
+        
         Ψ_is  = zeros(npara, Nw)
         EL_is = zeros(npara, Nw)
         ELs   = zeros(Nw)
@@ -679,116 +825,134 @@ function main()
         println("-"^80)
         
         # thermalize over given number of VMC steps
-        walker, EL_ave_old, EL_sigma_old = thermalize(walker, 100, vmc_params)
+        walker, EL_ave, EL_sigma = thermalize(walker, 200, vmc_params)
         
-        @printf("k = %4d  Nw = %d <EL> = %.10f σ(EL) = %.10f \n", -1, Nw, EL_ave_old, EL_sigma_old)           
+        @printf("k = %4d  Nw = %d <EL> = %.10f σ(EL) = %.10f \n", -1, Nw, EL_ave, EL_sigma)           
         a_opt = 10.0
-        print_params(wf_params,"wf_params")
+        print_params(wf_params, "wf_params")
         
         ntries = 0
         ndownhill = 0
-        for k ∈ 1:20
+        EL_corr_ave, Neff = E_correlated(walker, φ_T, wf_params)
+        open(opt_logfile,"a") do f
+            println(f, EL_ave, " ", EL_sigma, " ", EL_corr_ave, " ", Neff)
+        end       
+        
+        ok = true
+        for k ∈ 1:10 # hardcoded, break early if correlated number of configs Neff gets too low
+            println("-"^80)
             global wf_params
             
-            for iw ∈ 1:Nw
-                R = walker[iw].R
-                Ψ_is[:,iw]  =  G_i_AD(R, wf_params, φ_T)              
-                EL_is[:,iw] = G_i_AD(R, wf_params, EL)
-                #Ψ_is[:,iw] = G_i_numerical(R, wf_params, φ_T)              
-                #EL_is[:,iw]= G_i_numerical(R, wf_params, EL)
-                ELs[iw] =  EL(R, wf_params)
-                walker[iw].E = ELs[iw]
-                walker[iw].Ψ = φ_T(R, wf_params)
+            if ok
+                @info "updating gradients Ψ_is EL_is and local energies ELs using current wf_params"
+                # NB: don't change walker Ψ here, it must remain the one used in sampling configs
+                #     otherwise the correlated EL is wrong
+                for iw ∈ 1:Nw
+                    R = walker[iw].R                    
+                    Ψ_is[:,iw]  = G_i_AD(R, wf_params, φ_T)              
+                    EL_is[:,iw] = G_i_AD(R, wf_params, EL)
+                    # for testing:
+                    #Ψ_is[:,iw] = G_i_numerical(R, wf_params, φ_T)              
+                    #EL_is[:,iw]= G_i_numerical(R, wf_params, EL)
+                    ELs[iw] =  EL(R, wf_params)                    
+                end
             end
-
-            # solve wf_params and correlated E for three choices of a_opt
-            # -----------------------------------------------------------
-            a_opts = [0.1*a_opt, a_opt, 100*a_opt]
-            E_opts = zeros(3)
-                       
-                        
-            for i_opt ∈ 1:3
-                a_opt_tmp = a_opts[i_opt]
-                a_opt_tmp, Δα, wf_params_tmp = solve_Δα_wf_params!(walker, Ψ_is, EL_is, ELs, nonlin, fix_fact, a_opt_tmp, Δα, wf_params)
-                a_opts[i_opt] = a_opt_tmp # may have changed in solve
-                E_opts[i_opt] = E_correlated(walker, φ_T, wf_params_tmp)
-            end
-            println("Correlated energies for three values of a_opt:")
-            @show E_opts
-            @show a_opts
-
-            a_opt_ok = true
             
-            # find a_opt that gives the lowest correlated E using parabolic fit 
-            A = [a_opts[1]^2 a_opts[1] 1;
-                 a_opts[2]^2 a_opts[2] 1;
-                 a_opts[3]^2 a_opts[3] 1]                           
-            # fit to ax^2+bx+c 
-            a, b, c = A\E_opts # fails if there are <3 unique a_opts values!
-            a_opt = -b/(2a)
-            if a < 1e-14 || a_opt<1e-12  # maximum in parabola or just very small a_opt
-                # use a_opts that gave lowest E_opts 
-                imin = argmin(E_opts)
-                a_opt = a_opts[imin]
+            if ok
+                #
+                # solve wf_params and correlated E for three choices of a_opt
+                # -----------------------------------------------------------
+                a_opts = a_opt*[0.1, 1.0, 10.0]
+                E_opts = zeros(3)
+                wf_params_tmp = deepcopy(wf_params) # just to be sure orig wf_params doesn't change here
+                
+                for i_opt ∈ 1:3
+                    a_opt_tmp = a_opts[i_opt]
+                    a_opt_tmp, Δα, wf_params_upd = solve_Δα_wf_params!(walker, Ψ_is, EL_is, ELs, nonlin, fix_fact, a_opt_tmp, Δα, wf_params_tmp)
+                    a_opts[i_opt] = a_opt_tmp # may have changed in solve_ in preventing too large changes
+                    E_opts[i_opt], _ = E_correlated(walker, φ_T, wf_params_upd)
+                end
+                println("Correlated energies for three values of a_opt:")
+                @show E_opts
+                @show a_opts
+                
+                a_opt = find_a_opt(a_opts, E_opts)
+
+                # check that this a_opt is better than any in a_opts
+                a_opt, Δα, wf_params_upd = solve_Δα_wf_params!(walker, Ψ_is, EL_is, ELs, nonlin, fix_fact, a_opt, Δα, wf_params_tmp)
+                EL_corr_ave_upd, Neff = E_correlated(walker, φ_T, wf_params_upd)
+
+                if EL_corr_ave_upd > minimum(E_opts)
+                    # bad guess for a_opt, revert to best in list                    
+                    i = argmin(E_opts)
+                    a_opt = a_opts[i]
+                    EL_corr_ave_upd  = E_opts[i]
+                end
+                
+            else
+                # last one failed, so need to push a_opt higher
+                a_opt *= 10.0
             end
             @show a_opt
             
             
             # solve wf_params for a_opt found above
             # -------------------------------------
-            wf_params_orig = copy(wf_params)
-
-            a_opt, Δα, wf_params = solve_Δα_wf_params!(walker, Ψ_is, EL_is, ELs, nonlin, fix_fact, a_opt, Δα, wf_params)
-
-            #
             
+            a_opt, Δα, wf_params_upd = solve_Δα_wf_params!(walker, Ψ_is, EL_is, ELs, nonlin, fix_fact, a_opt, Δα, wf_params)
+            
+            
+            print_params(wf_params,"wf_params")          
             print_params(Δα,"Δα")
-            print_params(wf_params,"wf_params")
+            print_params(wf_params_upd,"wf_params_upd")
+            EL_corr_ave_upd, Neff = E_correlated(walker, φ_T, wf_params_upd)
+            @show EL_corr_ave_upd, Neff, Nw
+            if Neff<0.5*Nw
+                @info "Correlated sampling unrealiable: effective number of configs is too low"
+            end
             # -------------------------------------
             
-            mα = maximum(abs.(Δα))
+           
             
-            EL_ave = 0.0
-            EL2_ave = 0.0           
+            EL_ave_upd = 0.0
+            EL2_ave_upd = 0.0           
             for w in walker
-                E = EL(w.R, wf_params)
-                EL_ave += E
-                EL2_ave += E^2                
+                E = EL(w.R, wf_params_upd)
+                EL_ave_upd += E
+                EL2_ave_upd += E^2                
             end
-            EL_ave /= Nw
-            EL2_ave /= Nw
-            EL_sigma = sqrt(abs(EL2_ave - EL_ave^2))
+            EL_ave_upd /= Nw
+            EL2_ave_upd /= Nw
+            EL_sigma_upd = sqrt(abs(EL2_ave_upd - EL_ave_upd^2))
             #
-            # 
-            if EL_ave < atom_data.Eexact - 5.0
-                println("getting too low EL, breaking")                
-                break
-            end
-            ok = true
+            #
             
+            ok = true           
             ntries += 1
-            EL_corr_ave = E_correlated(walker, φ_T, wf_params)
-            #if EL_ave <= EL_ave_old + EL_sigma_old/sqrt(Nw)  # && EL_sigma < 2*EL_sigma_old
-            # decision to accept/reject based on correlated energy
-            if EL_corr_ave <= EL_ave_old  #+ EL_sigma_old/Nw
+            
+            @show EL_corr_ave, EL_corr_ave_upd
+            
+            # decision to accept/reject based on correlated energy and reliability of correlated sampling 
+            if EL_corr_ave_upd <= EL_corr_ave && Neff >= 0.5*Nw
                 # BETTER
                 ndownhill += 1                
-                EL_ave_old = EL_ave
-                EL_sigma_old = EL_sigma
-                
+                EL_ave = EL_ave_upd
+                EL_sigma = EL_sigma_upd
+                EL_corr_ave =  EL_corr_ave_upd
+                wf_params = deepcopy(wf_params_upd)
+                @info "better, new wf_params"
             else                
                 # WORSE
                 ok = false                
-                wf_params = wf_params_orig
             end
             open(opt_logfile,"a") do f
-                println(f,EL_ave, " ", EL_sigma, " ", EL_corr_ave)
+                println(f, EL_ave, " ", EL_sigma, " ", EL_corr_ave)
             end
             
             
             @printf("***** Accepted  %.5f %% \n", ndownhill*100.0/ntries)
-
-            @printf("k = %4d  Nw = %d <EL> = %.10f σ(EL) = %.10f max Δα = %.3e  a_opt = %.6f, ok = %3d\n",
+            mα = maximum(abs.(Δα))
+            @printf("k = %4d  Nw = %d <EL> = %.10f σ(EL) = %.10f max Δα = %.3e  a_opt = %.6f, ok = %s\n",
                     k, Nw, EL_ave, EL_sigma, mα, a_opt, ok)
 
            
@@ -802,25 +966,33 @@ function main()
             #walker, EL_ave_old, EL_sigma_old = thermalize(walker, 10, vmc_params)
             
         end
+        # add newline 
+        open(opt_logfile,"a") do f
+            println(f) 
+        end
         
         GC.gc() # manual carbage collection
         save_parameters(optfile, wf_params)
         # this may be omitted, takes a while:
-        if ndownhill>0
-            Eb_av, Eb_std = run_VMC!(walker, vmc_params)
-            if Eb_std<1e-10
-                println("perfect trial wave function found")
-                break
-            end
+        #if ndownhill>0
+        #    Eb_av, Eb_std = run_VMC!(walker, vmc_params)
+        #    if Eb_std<1e-10
+        #        println("perfect trial wave function found")
+        #        break
+        #    end
+        #end
+        # Increase number of configs
+        Nw = Int(floor(Nw*1.5))
+        if Nw>500000 # hardwired upper limit
+            break
         end
-        
     end
     
     println("Optimization done")
     println("Results in file",optfile*"_tmp")
     println("Move it to ",optfile," if you're satisfied")
-
-    
+    println("Running a few VMC steps")
+    run_VMC!(walker, vmc_params)
 end
 
 @time main()
