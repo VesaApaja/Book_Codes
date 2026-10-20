@@ -18,6 +18,7 @@ using SlaterDeterminants
 using STOOrbitals
 using Jastrow
 using VMCstep
+using CSF
 
 # for testing purposes only:
 #using Random
@@ -78,28 +79,44 @@ println("Jastrow parameters:")
 
 # Select atomic orbital functions
 SlaterDeterminants.init(basis_set)
-all_aos = parse_basis_set_data(atom, basis_set)
+aos = parse_basis_set_data(atom, basis_set)
 
-# Read lc coefficients from file  
+
+
+# Read lc coefficients and nl-combinations from file  
 cnls = parse_coeffients_data(atom, basis_set)
 
-# create linear combination of ao's 
-lc, npara_, nonlin_, lc_ups_, lc_dos_ = set_linear_combination_of_orbitals(atom_data, all_aos, cnls)
+# create linear combination of ao's
+csfs = read_csf_specs( "atom_data/"*atom*"_"*basis_set)
+
+lc, npara_, nonlin_, lc_ups_, lc_dos_ =
+    set_linear_combination_of_orbitals(
+        atom_data, aos, csfs
+    )
 
 
 # fix lists of orbitals
 const lc_ups = lc_ups_
 const lc_dos = lc_dos_
 
+
 # sanity check
 for aos in lc.orbitals
     if length(aos) != N
-        @show length(aos), N
-        error("lc.orbitals must have length N to accomdate all elecrons")
+        @show length(aos),N
+        error("lc.orbitals must have length N to accommondate all electrons")
     end
 end
 
-
+# more checks
+for (i, det) in enumerate(lc.orbitals)
+    println("\nDeterminant $i, coefficient = $(det_coeff(lc, i))")
+    for ao in det
+        println("  $(ao.orbital_type)  $(ao.spin)")
+    end
+end
+@show lc_ups
+@show lc_dos
 
 
 suffix_ = string(PROGRAM_FILE,"_",atom,"_order=",order,"_tau=",τ,"_basis_set=",basis_set)
@@ -147,7 +164,7 @@ function generate_walkers(Nw ::Int64, Nwx ::Int64, ϕ ::Function)
             end
         end
         walker[iw].Ψ = ϕ(walker[iw].R)
-        walker[iw].E = EL(walker[iw].R, ϕ, params)
+        walker[iw].E, _, _ = EL(walker[iw].R, ϕ, params)
         walker[iw].alive = 1
         E += walker[iw].E
 
@@ -162,7 +179,7 @@ function generate_walkers(Nw ::Int64, Nwx ::Int64, ϕ ::Function)
 end
 
 # version with default parameters
-@inline @fastmath function φ_T(R ::MMatrix{dim,N,Float64}) 
+@inline function φ_T(R ::MMatrix{dim,N,Float64}) 
     return φ_T(R, params)
 end
 
@@ -177,7 +194,7 @@ end
     for (i,aos) in enumerate(lc.orbitals)        
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]
-        DD += lc.coeffs[i] * D_up(R, ups) * D_do(R, dos)
+        DD += det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
     end
     if isapprox(DD,0.0)
         error("φ_T: DD = 0, probably bad orbitals")
@@ -201,7 +218,7 @@ end
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]
         # see comments before F(R)
-        cDD = lc.coeffs[i] * D_up(R, ups) * D_do(R, dos)
+        cDD = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
         TL += -D* cDD * ( ∇2_up(R, ups) + ∇2_do(R, dos) )        
         ∇DD +=  cDD *( F_up(R, ups) + F_do(R, dos) )
         DDsum +=  cDD
@@ -232,7 +249,7 @@ end
     end    
     TL += -D * ( sum(∇J.^2) + ∇2J )
     EL = TL + VL
-    EL    
+    EL, TL, VL   
 end
 
 
@@ -253,7 +270,7 @@ end
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]
         #
-        cDD = lc.coeffs[i] * D_up(R, ups) * D_do(R, dos)
+        cDD = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
         F .+= cDD * ( F_up(R, ups) + F_do(R, dos) )
         DDsum += cDD
     end
@@ -366,7 +383,7 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params, Eallfile ::S
     println("thermalizing $Nw walkers using VMC")
     @inbounds for iw in 1:Nw
         R = walker[iw].R
-        @inbounds for i in 1:50
+        @inbounds for i in 1:500
             vmc_step!(R, vmc_params, φ_T)
             if i%10 == 0
                 adjust_step!(vmc_params)
@@ -380,34 +397,60 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params, Eallfile ::S
     # VMC
     #
     Estat = init_stat(1, 10)
+    Tstat = init_stat(1, 10)
+    Vstat = init_stat(1, 10)
     E_ave = 0.0
+    T_ave = 0.0
+    V_ave = 0.0
     while true
-        E_ave *= 0.0 # make sure we use the same E_ave as outside 
+        E_ave *= 0.0 # make sure we use the same E_ave as outside
+        T_ave *= 0.0
+        V_ave *= 0.0
         @inbounds for iw in 1:Nw
             R = walker[iw].R
             vmc_step!(R, vmc_params, φ_T)
-            E = EL(R, params)
+            E, T, V = EL(R, params)
             walker[iw].E = E    
             walker[iw].Ψ = φ_T(R)
             E_ave += E
+            T_ave += T
+            V_ave += V
         end
         open(Eallfile,"a") do f
-            println(f,E_ave/Nw)
+            println(f,E_ave/Nw," ",T_ave/Nw," ",V_ave/Nw)
         end
         add_sample!(Estat, E_ave/Nw)
+        add_sample!(Tstat, T_ave/Nw)
+        add_sample!(Vstat, V_ave/Nw)
         adjust_step!(vmc_params)
         if Estat.finished            
             Eb_ave, Eb_std, E_inputvar2, Nb = get_stats(Estat)
-            @printf("VMC <E> = %.10f +/- %.10f \n", Eb_ave, Eb_std)
-            # short VMC 
+            Tb_ave, Tb_std, _ , _ = get_stats(Tstat)
+            Vb_ave, Vb_std, _, _  = get_stats(Vstat)
+            @printf("VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  \n",
+                    Eb_ave, Eb_std, Tb_ave, Tb_std, Vb_ave, Vb_std)
+            
+            # short VMC before DMC
             if (Eb_std<0.001 && Nb>5) || Nb==20
                 output_MCresult(Eb_ave, Eb_std)
+                output_MCresult(Tb_ave, Tb_std)
+                output_MCresult(Vb_ave, Vb_std)
+                println("VMC done")
                 return Eb_ave 
             end
-            # just VMC 
+            # long VMC only (no DMC)
+            #if (Eb_std<0.00001 && Nb>5) 
+            #    output_MCresult(Eb_ave, Eb_std)
+            #    output_MCresult(Tb_ave, Tb_std)
+            #    output_MCresult(Vb_ave, Vb_std)
+            #    println("VMC done")
+            #    exit()
+            #end
+            # just a semi-short VMC  (no DMC)
             #if (Eb_std<0.0001 && Nb>5) 
             #    output_MCresult(Eb_ave, Eb_std)
-            #    output_MCresult(Eb_ave, Eb_std)
+            #    output_MCresult(Tb_ave, Tb_std)
+            #    output_MCresult(Vb_ave, Vb_std)
             #    println("VMC done")
             #    exit()
             #end
@@ -453,7 +496,7 @@ function main()
     
     for i in 1:Nw
         R = walker[i].R
-        E = EL(R, params)
+        E, _, _ = EL(R, params)
         num_check_EL(R, E, φ_T, x->Common.V(x,N,Z))
     end
     println("Full EL check passed")
@@ -536,7 +579,7 @@ function main()
             
             if accept
                 Nacc +=1
-                ELnew = EL(Rnew, params)    
+                ELnew, _, _ = EL(Rnew, params)    
                 walker[iw].E = ELnew
                 walker[iw].Ψ = φTnew
                 walker[iw].age = 0.0
