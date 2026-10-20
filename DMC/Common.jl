@@ -21,8 +21,9 @@ export V
 
 export parse_atom_data, parse_basis_set_data, parse_Jastrow_data, parse_STO, parse_coeffients_data
 export WfParams
-export update_wf_params,  norm_params!
-export set_linear_combination_of_orbitals
+export update_wf_params, copy_wf_params!
+export det_coeff
+
 
 const dim = 3    # space dimension
 const D = 0.5    # hbar^2/2m in a.u. 
@@ -37,11 +38,11 @@ struct AtomData
     Eexact::Float64
 end
 
-# use two Number types, because AD derives exponents and coefficients separately
+# Use two Number types, because AD derives exponents and coefficients separately
 # ForwardDiff uses Dual type, ReverseDiff uses TrackedArray type
-struct AtomicOrbital{A<:AbstractString, T<:Number, Z<:Number}
+struct AtomicOrbital{A<:AbstractString, B<:AbstractString, T<:Number, Z<:Number}
     atom         ::A
-    orbital_type ::A
+    orbital_type ::B
     n            ::Int
     l            ::Int
     exponents    ::AbstractVector{T}
@@ -49,26 +50,11 @@ struct AtomicOrbital{A<:AbstractString, T<:Number, Z<:Number}
     spin         ::A
 end
 
-struct LinearCombination{T<:Number}
-    orbitals     ::Vector{Any}
-    coeffs       ::AbstractVector{T}
-end
-
-struct Molecule{T<:Number,Z<:Number}
-    atoms        ::Vector{String}          # Atomic species, e.g., ["H", "H", "O"]
-    positions    ::Vector{SVector{3, T}}   # Atom positions; 3D 
-    molecular_orbitals ::Vector{LinearCombination{Z}}  # MO's (LCAO)
-end
-
-function Ψ_mol(m::Molecule, R::MMatrix{dim,N,Float64}) where {dim, N}
-    Ψ = 0.0
-    for mo in m.molecular_orbitals
-        for (ao, coeff) in zip(mo.orbitals, mo.coeffs)
-            # Add contributions from atomic orbitals
-            Ψ += coeff * DD(ao, R)
-        end
-    end
-    return Ψ
+struct LinearCombination{T,A}
+    orbitals::A
+    csf_coeffs::Vector{T}
+    det_csf::Vector{Int}
+    det_weight::Vector{Float64}
 end
 
 function DD(ao::AtomicOrbital, R::MMatrix{dim,N,Float64}) where {dim, N}
@@ -89,69 +75,6 @@ struct WfParams
     jpara ::JastrowParameters
 end
 
-# define copy of wave function parameters
-Base.copy(p::WfParams) = WfParams(p.lc, p.jpara)
-
-# normalize c's so that the 1s is always 1.0
-# (also lc.coeffs may start with 1)
-function norm_params!(wf_params::WfParams, basis_set ::String, Z ::Int64)
-    
-    sc = 0.0
-    for aos in wf_params.lc.orbitals        
-        for ao in aos
-            if ao.orbital_type == "1s"
-                sc = ao.coefficients[1]
-                break
-            end
-        end
-    end
-    
-    orbitals = []    
-    for aos in wf_params.lc.orbitals
-        aolist = []
-        for ao in aos                
-            new_coefficients = ao.coefficients ./ sc
-            new_ao = AtomicOrbital(ao.atom, ao.orbital_type, ao.n, ao.l, ao.exponents, new_coefficients, ao.spin)
-            push!(aolist, new_ao)
-        end
-        push!(orbitals, aolist)        
-    end
-    
-    # normalize lc.coeffs
-    scc =  wf_params.lc.coeffs[1]
-    wf_params.lc.coeffs ./= scc
-    
-    # keep 2p coefficients same    
-    n_2p = 0
-    s_2p = 0.0
-    for (aos, coef) in zip(wf_params.lc.orbitals, wf_params.lc.coeffs)
-        for ao in aos
-            if occursin("2p", ao.orbital_type)                
-                s_2p += coef
-                n_2p += 1
-            end
-        end
-    end
-    # average
-    s_2p /= n_2p
-    # modify lc.coeffs that contain 2p orbitals
-    i = 0
-    for aos in wf_params.lc.orbitals
-        i += 1
-        for ao in aos            
-            if occursin("2p", ao.orbital_type)
-                wf_params.lc.coeffs[i] = s_2p
-            end
-        end
-    end
-   
-    
-    lc = LinearCombination(orbitals, wf_params.lc.coeffs)
-    jpara = wf_params.jpara
-    return  WfParams(lc, jpara)
-
-end
-
 function one(::Type{AtomicOrbital})
     return AtomicOrbital("", "", 0,0,ones(Float64, 0), ones(Float64, 0), 0)
 end
@@ -167,6 +90,10 @@ function +(ao::AtomicOrbital, b::AtomicOrbital)
         AtomicOrbital(ao.atom, ao.orbital_type, ao.n, ao.l, ao.exponents .+ b.exponents, ao.coefficients .+ b.coefficients, ao.spin)
 end
 
+# get the actual determinant coefficient
+@inline det_coeff(lc::LinearCombination, i::Int) =
+    lc.csf_coeffs[lc.det_csf[i]] * lc.det_weight[i]
+
 # In case of ReverseDiff, define + between TrackedArray and StaticArray types
 # commented out, was a workaround for older version of ReverseDiff
 # function +(x::ReverseDiff.TrackedArray, y::StaticArray)
@@ -179,73 +106,167 @@ end
 # define WfParams + Δα
 # Notice that Δα is in a specific order
 #  
-function update_wf_params(a::WfParams, x::MVector{T}) where T
-    lc = a.lc    
+  
+
+function update_wf_params(a::WfParams, x::AbstractVector)
+    lc = a.lc
     pos = 1
-    len = length(lc.coeffs)
-    new_coeffs = lc.coeffs .+ x[pos:pos+len-1]
-    pos += len
-    
-    nl = []
-    new_params = Dict()
+
+    # ---------------------------------------------
+    # Update independent CSF coefficients
+    # Keep the first CSF coefficient fixed
+    # ---------------------------------------------
+
+    ncsf = length(lc.csf_coeffs)
+    nfree = ncsf - 1
+
+    new_csf_coeffs = vcat(
+        lc.csf_coeffs[1:1],
+        lc.csf_coeffs[2:end] .+ x[pos:pos+nfree-1]
+    )
+    pos += nfree
+
+    # ---------------------------------------------
+    # Update unique orbital parameters
+    # ---------------------------------------------
+
+    P = promote_type(eltype(x), Float64)
+
+    new_params = Dict{
+        Tuple{Int,Int},
+        Tuple{Vector{P},Vector{P}}
+    }()
+
     for aos in lc.orbitals
-        for ao in aos            
-            if [ao.n, ao.l] ∉ nl
-                push!(nl,[ao.n, ao.l])
+        for ao in aos
+            key = (ao.n, ao.l)
+
+            if !haskey(new_params, key)
+
                 len = length(ao.exponents)
-                # don't let exponents change more than, say, 10 %
-                
-                new_exponents = ao.exponents .+ x[pos:pos+len-1]
-                # don't let exponents change more than, say, 10 %
-                for iexp ∈ 1:len
-                    dd = new_exponents[iexp]-ao.exponents[iexp]
-                    if abs(dd)/abs(ao.exponents[iexp])>0.10
-                        new_exponents[iexp] = ao.exponents[iexp] + 0.10*dd
+                @assert length(ao.coefficients) == len
+
+                # Limit exponent changes to +/- 10%
+                new_exponents = [
+                    begin
+                        ζ = ao.exponents[i]
+                        dd = x[pos+i-1]
+                        ζ + clamp(dd, -0.10*ζ, 0.10*ζ)
                     end
-                end
-                
-                # check that exponents are positive
-                if !all(>=(0),new_exponents)
-                    println("Common update_wf_params! : negative orbital exponent")  
-                    @show ao.exponents, new_exponents
+                    for i in 1:len
+                ]
+
+                if !all(z -> isfinite(z) && z > 0.0, new_exponents)
+                    println("update_wf_params: invalid orbital exponent")
                     return a
                 end
+
                 pos += len
-                new_coefficients = ao.coefficients .+ x[pos:pos+len-1]
+
+                new_coefficients =
+                    ao.coefficients .+ x[pos:pos+len-1]
+
                 pos += len
-                new_params[ao.n,ao.l] = [new_exponents,new_coefficients]
+
+                new_params[key] =
+                    (new_exponents, new_coefficients)
             end
         end
     end
-    
-    orbitals = []
+
+    # ---------------------------------------------
+    # Reconstruct orbitals, preserving sharing
+    # ---------------------------------------------
+
+    orbitals = Vector{AtomicOrbital}[]
+
     for aos in lc.orbitals
-        new_aolist = AtomicOrbital[]                
-        for ao in aos            
-            new_ao = AtomicOrbital(ao.atom, ao.orbital_type, ao.n, ao.l, new_params[ao.n,ao.l][1], new_params[ao.n,ao.l][2], ao.spin)
-            push!(new_aolist, new_ao)            
+        new_aolist = AtomicOrbital[]
+
+        for ao in aos
+            exponents, coefficients = new_params[(ao.n, ao.l)]
+
+            new_ao = AtomicOrbital(
+                ao.atom,
+                ao.orbital_type,
+                ao.n,
+                ao.l,
+                exponents,
+                coefficients,
+                ao.spin
+            )
+
+            push!(new_aolist, new_ao)
         end
+
         push!(orbitals, new_aolist)
     end
-    lc = LinearCombination(orbitals, new_coeffs)
 
-    param = copy(a.jpara.param)  # don't set param=a.jpara.param, you'll chance input!
-   
-    for i ∈ 1:4
-        param[i] +=  x[end-4+i]
-    end
-    # check that Jastrow β1 and β2 are positive
-    if param[2]<0.0 ||  param[3]<0.0
-        println("Common update_wf_params! : negative Jastrow β1 or β2")  
-        #jpara = a.jpara.param
+    # Preserve the CSF -> determinant mapping
+    new_lc = LinearCombination(
+        orbitals,
+        new_csf_coeffs,
+        lc.det_csf,
+        lc.det_weight
+    )
+
+    # ---------------------------------------------
+    # Update Jastrow parameters
+    # ---------------------------------------------
+
+    nj = length(a.jpara.param)
+
+    @assert pos + nj - 1 == length(x)
+
+    param = a.jpara.param .+ x[pos:end]
+
+    if !all(isfinite, param)
+        error("update_wf_params: invalid Jastrow parameters")
+        @show param
         return a
     end
-        
-    jpara = JastrowParameters(param)
+    # keep Jastrow β1 and β2 > 0, use a lower limit
+    if param[2]<0.001 || param[3]<0.001
+        @info "Jastrow β1 or β2 too low (<0.001), force min values"
+        param[2] = max(param[2], 0.001)
+        param[3] = max(param[3], 0.001)
+    end
 
-    new_a = WfParams(lc, jpara)
-    return new_a
+    new_jpara = JastrowParameters(param)
+
+    return WfParams(new_lc, new_jpara)
 end
+
+
+
+function copy_wf_params!(dest::WfParams, src::WfParams)
+
+    # CSF / determinant coefficients
+    copyto!(dest.lc.coeffs, src.lc.coeffs)
+
+    # Atomic orbital parameters
+    @assert length(dest.lc.orbitals) == length(src.lc.orbitals)
+
+    for (aos_dest, aos_src) in
+        zip(dest.lc.orbitals, src.lc.orbitals)
+
+        @assert length(aos_dest) == length(aos_src)
+
+        for (ao_dest, ao_src) in zip(aos_dest, aos_src)
+            @assert (ao_dest.n, ao_dest.l, ao_dest.spin) ==
+                    (ao_src.n, ao_src.l, ao_src.spin)
+
+            copyto!(ao_dest.exponents, ao_src.exponents)
+            copyto!(ao_dest.coefficients, ao_src.coefficients)
+        end
+    end
+
+    # Jastrow parameters
+    copyto!(dest.jpara.param, src.jpara.param)
+
+    return dest
+end
+
 
 
 mutable struct VMC_Params
@@ -308,8 +329,8 @@ function init_walkers(Nw ::Int64,
             R .*= scale # scale a bit
             Ψ = φ_T(R)
             if Ψ > 0
-                w.R = copy(R)  
-                w.Ψ = copy(Ψ)
+                copyto!(w.R, R)  
+                w.Ψ = Ψ
                 break
             end
         end        
@@ -352,144 +373,6 @@ end
     end
     V
 end
-
-
-
-
-#
-# Set up CSF's (Configuration State Functions)
-# - done manually in the atom_data setup files, nothing is automated
-#
-function set_linear_combination_of_orbitals(atom_data ::AtomData,
-                                            aos ::Vector{AtomicOrbital},
-                                            cnls ::Vector
-                                            )
-       
-
-    println("="^80)
-    println("="^80)
-    println("Calculation will use these atomic orbitals:") 
-    
-    atom = atom_data.atom
-    
-    # collect requested atomic orbitals listed in cnls
-    aolist = []
-    orbital_dict = Dict( (1,0,0)=>"1s", (2,0,0)=>"2s", (2,1,-1)=>"2px", (2,1,0)=>"2py" ,(2,1,1)=>"2pz")                     
-
-    coeffs = Float64[]
-    m = -1
-    for i in 1:2:length(cnls)
-        coeff = cnls[i]
-        append!(coeffs, coeff)
-        nls = cnls[i+1]
-        spin="up"
-        
-        aolist_ = AtomicOrbital[]
-
-        for j in 1:2:length(nls)
-            n = nls[j]
-            l = nls[j+1]
-            # find correct ao from known aos
-            found = false
-            for (i,ao) in enumerate(aos)
-                if ao.n==n && ao.l==l                    
-                    orbital_type = orbital_dict[(n,l,0)]
-                    if n==2 && l==1
-                        orbital_type = orbital_dict[(n,l,m)]
-                    end
-                    
-                    ao_ = AtomicOrbital(ao.atom,
-                                        orbital_type,
-                                        ao.n,
-                                        ao.l,
-                                        ao.exponents,
-                                        ao.coefficients,
-                                        spin)
-                    push!(aolist_,ao_)                                            
-                    found = true
-                end
-            end            
-            if !found
-                error("Atomic Orbital n l = $n $l is not among known aos.")
-            end
-            # next spin
-            spin = (spin == "up") ? "down" : "up"
-            if n==2 && l==1 && spin=="up"
-                # next m
-                if m==-1
-                    m = 0
-                elseif m==0
-                    m = 1
-                else
-                    m = -1
-                end
-            end
-
-        end
-        push!(aolist,aolist_)
-        
-    end
-    
-    # only different n,l pairs are orbitals with different parameters
-    nl = []
-    npara = length(coeffs) # coefficients are first parameters
-    nparanonlin = 0
-   
-    for (coeff,aos) in zip(coeffs,aolist)
-        println("="^80)
-        @show coeff
-        for ao in aos
-            @show ao
-            if [ao.n, ao.l] ∉ nl
-                push!(nl, [ao.n, ao.l])
-                npara += 2*length(ao.exponents)
-                nparanonlin += length(ao.exponents)
-            end
-        end
-    end
-    println("="^80)
-
-    lc = LinearCombination(
-        aolist, # list of atomic orbitals 
-        coeffs # Coefficients        
-    )
-
-    nonlin = Int64[]
-    pos = length(lc.coeffs) # first params are lc.coeffs
-    nl = []
-    for aos in lc.orbitals
-        for ao in aos        
-            if [ao.n, ao.l] ∉ nl
-                push!(nl,[ao.n, ao.l])
-                len = length(ao.exponents)
-                append!(nonlin, [i for i in pos+1:pos+len])
-                pos += 2*len # skip coefficients
-            end
-        end
-    end
-    # list Jastrow α, β1 and β2 as nonlinear parameters ; not yet counted in npara
-    append!(nonlin, [npara+1, npara+2, npara+3])
-            
-    @show nonlin
-    lc_ups = []
-    lc_dos = []
-    for aos in lc.orbitals
-        ups = Int[]
-        dos = Int[]
-        for (i,ao) in enumerate(aos)
-            if ao.spin =="up"
-                push!(ups,i)
-            else
-                push!(dos,i)
-            end
-        end
-        push!(lc_ups,ups)
-        push!(lc_dos,dos)
-    end
-    return lc, npara, nonlin, lc_ups, lc_dos
-   
-end
-
 
 # ====================
 
