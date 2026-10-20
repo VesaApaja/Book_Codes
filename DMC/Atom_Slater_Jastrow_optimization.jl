@@ -65,18 +65,20 @@ println("Jastrow parameters:")
 @show jpara.param
 
 #sanity check
-if jpara.param[2] == 0.0 || jpara.param[3] == 0.0
-    @warn("You have either β1 or β2 equal to 0.0")
+if N>1
+    if jpara.param[2] == 0.0 || jpara.param[3] == 0.0
+        @warn("You have either β1 or β2 equal to 0.0")
+    end
 end
 
-if jpara.param[2] == 0.0 && jpara.param[3] == 0.0
-    error("You have β1 = β2 = 0.0, long-range Jastrow factor will explode.")
-end
-
-# keep α=0 to not contaminate STO basis 
+# keep Jastrow α=0 to not contaminate STO basis 
 jpara.param[1] == 0.0
-# keep α12 = 1.0 because of cusp condition
-jpara.param[4] == 1.0
+# keep Jastrow α12 = 1.0 because of cusp condition; only if there are more than one electron
+if N>1
+    jpara.param[4] == 1.0
+else
+    jpara.param[4] == 0.0
+end
 
 
 # Select atomic orbital functions
@@ -796,7 +798,7 @@ function main()
     fix_fact = @MVector ones(npara)
 
     
-    @info "Fixing Jastrow α=0 and α12=1.0" 
+    @info "Fixing Jastrow α and α12" 
     fix_fact[end-3] = 0.0 # fix Jastrow α to prevent contaminating STO exponents
     fix_fact[end] = 0.0 # fix Jastrow α12, it's determined by the cusp condition
     
