@@ -775,7 +775,7 @@ function main()
         fix_fact[nonlin] .= 0.0
     end
 
-    Nw = 100 # very small set to begin with, tweak if necessary
+    Nw = 1000 # very small set to begin with, tweak if necessary
     
     while true
         
