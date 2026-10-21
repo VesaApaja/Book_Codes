@@ -104,6 +104,8 @@ function argparse(known_args ::Vector{String})
                 #@show(value)
                 if occursin(".",value)
                     value = parse(Float64,value)
+                elseif occursin("true",value)||occursin("false",value)
+                    value = parse(Bool,value)
                 else
                     try
                         value = parse(Int64,value)
