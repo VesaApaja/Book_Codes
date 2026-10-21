@@ -26,29 +26,42 @@ using CSF
 
 
 
-possible_args=["atom","order","tau","basis_set"]
+possible_args=["atom","order","tau","basis_set","DMCaccuracygoal","VMConly","VMCaccuracygoal"]
 arg_dict = argparse(possible_args)
 # use command line values or defaults
 atom = get(arg_dict, "atom", "")
 order_in = get(arg_dict, "order", 1) 
 τ_in = get(arg_dict, "tau", 0.001)
+DMCaccuracygoal_in = get(arg_dict, "VMCaccuracygoal", 0.0001)
 basis_set = get(arg_dict, "basis_set", "STO")
+VMConly_in =  get(arg_dict, "VMConly", false)
+VMCaccuracygoal_in = get(arg_dict, "VMCaccuracygoal", 0.001)
 
 
-const order = order_in :: Int64
-const τ = τ_in :: Float64
+const order::Int = order_in 
+const τ::Float64 = τ_in 
 
-const κ = 10.0 :: Float64 # may need adjustment
-const accuracy_goal = 0.0001
+const κ::Float64 = 10.0  # may need adjustment
+const accuracy_goal::Float64 = DMCaccuracygoal_in
 
-const Nwx = 20000 :: Int64
-const Nw_target = 500 :: Int64
+const VMConly::Bool = VMConly_in
+const VMCaccuracygoal::Float64 = VMCaccuracygoal_in
 
-const blocksize = floor(Int64,1/(5*τ)) :: Int64 # just an approx
+const Nw_target::Int = 500
+const Nwx::Int = VMConly ? Nw_target : 20000 
 
+const blocksize::Int = floor(Int64,1/(5*τ)) # just an approx
+
+
+
+if VMConly    
+    @info "VMConly=true: This is a VMC-only calculation"
+    @info "VMCaccuracygoal set to $VMCaccuracygoal"
+end
 
 
 atom_data = parse_atom_data(atom)
+
 
 # Print atom data
 println("Atom: ", atom_data.atom)
@@ -399,6 +412,7 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params, Eallfile ::S
     Estat = init_stat(1, 10)
     Tstat = init_stat(1, 10)
     Vstat = init_stat(1, 10)
+    TVstat = init_stat(1, 10)
     E_ave = 0.0
     T_ave = 0.0
     V_ave = 0.0
@@ -422,38 +436,42 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params, Eallfile ::S
         add_sample!(Estat, E_ave/Nw)
         add_sample!(Tstat, T_ave/Nw)
         add_sample!(Vstat, V_ave/Nw)
+        add_sample!(TVstat, -2*T_ave/V_ave)
         adjust_step!(vmc_params)
         if Estat.finished            
             Eb_ave, Eb_std, E_inputvar2, Nb = get_stats(Estat)
             Tb_ave, Tb_std, _ , _ = get_stats(Tstat)
             Vb_ave, Vb_std, _, _  = get_stats(Vstat)
-            @printf("VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  \n",
-                    Eb_ave, Eb_std, Tb_ave, Tb_std, Vb_ave, Vb_std)
-            
-            # short VMC before DMC
-            if (Eb_std<0.001 && Nb>5) || Nb==20
-                output_MCresult(Eb_ave, Eb_std)
-                output_MCresult(Tb_ave, Tb_std)
-                output_MCresult(Vb_ave, Vb_std)
-                println("VMC done")
-                return Eb_ave 
-            end
+            TVb_ave, TVb_std, _, _  = get_stats(TVstat)
+            @printf("VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  -2<T>/<V> =  %.10f ± %.10f \n",
+                    Eb_ave, Eb_std, Tb_ave, Tb_std, Vb_ave, Vb_std, TVb_ave, TVb_std)
             # long VMC only (no DMC)
-            #if (Eb_std<0.00001 && Nb>5) 
-            #    output_MCresult(Eb_ave, Eb_std)
-            #    output_MCresult(Tb_ave, Tb_std)
-            #    output_MCresult(Vb_ave, Vb_std)
-            #    println("VMC done")
-            #    exit()
-            #end
-            # just a semi-short VMC  (no DMC)
-            #if (Eb_std<0.0001 && Nb>5) 
-            #    output_MCresult(Eb_ave, Eb_std)
-            #    output_MCresult(Tb_ave, Tb_std)
-            #    output_MCresult(Vb_ave, Vb_std)
-            #    println("VMC done")
-            #    exit()
-            #end
+            if VMConly
+                if (Eb_std<VMCaccuracygoal && Nb>5)
+                    println()
+                    output_MCresult(Eb_ave, Eb_std)
+                    output_MCresult(Tb_ave, Tb_std)
+                    output_MCresult(Vb_ave, Vb_std)
+                    datafile = string("atom_data/"*atom*"_"*basis_set)
+                    @info "appending VMC energy data to atom data file $datafile"
+                    open(datafile,"a") do f
+                        @printf(f, "VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  -2<T>/<V> =  %.10f ± %.10f \n",
+                                Eb_ave, Eb_std, Tb_ave, Tb_std, Vb_ave, Vb_std, TVb_ave, TVb_std)
+                    end
+                    println("VMC done. Exiting")
+                    exit(0)
+                end
+            else
+                # short VMC before DMC
+                if (Eb_std<VMCaccuracygoal && Nb>5) || Nb==20
+                    println()
+                    output_MCresult(Eb_ave, Eb_std)
+                    output_MCresult(Tb_ave, Tb_std)
+                    output_MCresult(Vb_ave, Vb_std)
+                    println("VMC done, continuing to DMC")
+                    return Eb_ave
+                end
+            end            
         end        
     end
 end
