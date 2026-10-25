@@ -4,7 +4,7 @@ import Distributions: Normal
 using StaticArrays
 using Statistics
 
-import LinearAlgebra: ⋅
+import LinearAlgebra: ⋅, dot
 # slightly faster norm 
 @inline norm(x) = sqrt(sum(abs2,x))
 
@@ -220,27 +220,40 @@ end
     return EL(R, params.lc, params.jpara)
 end
 
-@inline function EL(R ::MMatrix{dim,N,Float64}, lc ::LinearCombination, jpara ::JastrowParameters)
+
+@inline function EL(R ::MMatrix{dim, N, Float64}, lc ::LinearCombination, jpara ::JastrowParameters)
+    
+    local ∇DD
     
     VL = 0.0 
-
-    ∇DD = zeros(dim,N)
     TL = 0.0
     DDsum = 0.0
-    for (i,aos) in enumerate(lc.orbitals)
+    for (i,aos) in enumerate(lc.orbitals)        
         ups = aos[lc_ups[i]]
         dos = aos[lc_dos[i]]
-        # see comments before F(R)
-        cDD = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
-        TL += -D* cDD * ( ∇2_up(R, ups) + ∇2_do(R, dos) )        
-        ∇DD +=  cDD *( F_up(R, ups) + F_do(R, dos) )
-        DDsum +=  cDD
+        # use concrete types
+        ups = Vector{typeof(ups[1])}(ups)
+        dos = Vector{typeof(dos[1])}(dos)
+
+        # see comments before F(R)           
+        DD_occu = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
+        TL += -D* DD_occu*( ∇2_up(R, ups) + ∇2_do(R, dos) )
+
+        # fused broadcasting
+        Fu = F_up(R, ups)
+        Fd = F_do(R, dos)       
+        if i == 1
+            ∇DD = @. DD_occu * (Fu + Fd)
+        else
+            @. ∇DD += DD_occu * (Fu + Fd)
+        end
+
+        DDsum +=  DD_occu
     end
     TL /= DDsum
-    ∇DD /= (DDsum*2)    
-    ∇J   = F_J(R, jpara, s)/2     # (∇ e^J)/e^J = ∇J = F/2
-    
-    TL += -D*2* ∇DD ⋅ ∇J
+    ∇DD .*= inv(2DDsum)
+    # ∇ e^J/e^J = ∇J ; FJ := 2 ∇J
+    FJ   = F_J(R, jpara, s)     
     
     α, β1, β2, α12 = jpara.param
     ∇2J  = 0.0
@@ -250,8 +263,7 @@ end
         VL += -Z/rk
         for i in k+1:N
             ski = s[k,i]
-            rki_vec = R[:,k]-R[:,i] 
-            rki = norm(rki_vec) 
+            rki = norm(R[:,k]-R[:,i]) 
             VL += 1/rki
             if ski==2
                 ∇2J += 4* α12/(ski*(1+β1*rki)^3)/rki
@@ -259,10 +271,10 @@ end
                 ∇2J += 4* α12/(ski*(1+β2*rki)^3)/rki
             end
         end        
-    end    
-    TL += -D * ( sum(∇J.^2) + ∇2J )
-    EL = TL + VL
-    EL, TL, VL   
+    end
+    TL += -D * ( dot(∇DD, FJ) + 0.25 * sum(abs2, FJ) +  ∇2J )
+    EL = TL + VL    
+    EL, TL, VL      
 end
 
 
@@ -287,7 +299,7 @@ end
         F .+= cDD * ( F_up(R, ups) + F_do(R, dos) )
         DDsum += cDD
     end
-    F ./= DDsum  # blows up if DDsum≈0.0
+    F ./= DDsum  
     F .+= F_J(R, jpara, s)
     #
     if UNR
@@ -455,7 +467,7 @@ function run_VMC!(walker ::Vector{Walker}, vmc_params ::VMC_Params, Eallfile ::S
                     datafile = string("atom_data/"*atom*"_"*basis_set)
                     @info "appending VMC energy data to atom data file $datafile"
                     open(datafile,"a") do f
-                        @printf(f, "VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  -2<T>/<V> =  %.10f ± %.10f \n",
+                        @printf(f, "# VMC <E> = %.10f ± %.10f  <T> = %.10f ± %.10f  <V> = %.10f ± %.10f  -2<T>/<V> =  %.10f ± %.10f \n",
                                 Eb_ave, Eb_std, Tb_ave, Tb_std, Vb_ave, Vb_std, TVb_ave, TVb_std)
                     end
                     println("VMC done. Exiting")
@@ -612,32 +624,28 @@ function main()
             Sbar = ET - (Ebest + sign(Emid-Ebest)*min(Ecut, abs(Emid-Ebest)))
             weight = exp(τ*Sbar)
             # basic branching weights that become poor near nodal surface:
-            #weight  = exp(-τ*(0.5*(ELold+ELnew)-ET)) ::Float64
-            #weight  = exp(-τ*(ELold-ET)) ::Float64
+            #weight  = exp(-τ*(0.5*(ELold+ELnew)-ET)) 
+            #weight  = exp(-τ*(ELold-ET)) 
 
             copies[iw]  = floor(Int64,weight + rand())
         end
-        
         # Branching        
         branch!(walker, copies, alives)
         
         # collect energy from walkers
-        # note: do this *after* drift, diffusion and branching ! 
+        # note: do this *after* drift, diffusion and branching !
+        Nw = length(alives)
         E   = 0.0  
-        n   = 0
         max_age = 0.0
-        @inbounds for iw in 1:Nwx
-            if walker[iw].alive == 1
-                max_age = max(max_age, walker[iw].age)
-                E += walker[iw].E
-                n += 1                
-            end
+        @inbounds for iw in alives
+            max_age = max(max_age, walker[iw].age)
+            E += walker[iw].E
         end
         if max_age>50.0
+            @warn "A walker age exceeds 50.0, possibly stuck"
             @show max_age
         end
-        # n is Nw
-        E_ave += E/n
+        E_ave += E/Nw
         nE += 1
         
         idmc +=1
@@ -650,18 +658,18 @@ function main()
         
         # add new energy data
         if idmc>=0
-            add_sample!(Estat, E/n)
+            add_sample!(Estat, E/Nw)
             add_sample!(ETstat, ET)
         end
         
 
         if idmc<0
             @printf("DMC %10d  τ = %.5e <E> = %.10f E = %.10f ET = %.10f <E>_exact = %.10f  %6d Walkers  acceptance = %.5f \n",
-                    idmc, τ, E_ave/nE, E/n, ET, Eexact, Nw, 100.0*Nacc/Ntry)
+                    idmc, τ, E_ave/nE, E/Nw, ET, Eexact, Nw, 100.0*Nacc/Ntry)
         end
         
         open(Eallfile,"a") do f
-            println(f,E/n," ",E_ave/nE," " ,ET," ",Nw)
+            println(f,E/Nw," ",E_ave/nE," " ,ET," ",Nw)
         end
         # block data
         # ==========
@@ -671,7 +679,7 @@ function main()
             ETb_ave, ETb_std, E_inputvar2, Nb_ = get_stats(ETstat)
 
             @printf("DMC %10d τ = %.5e  <E> = %.10f +/- %.10f <ET> = %.10f +/- %.10f E = %.10f ET = %.10f <E>_exact = %.10f \
-                %6d Walkers \n", idmc, τ, Eb_ave, Eb_std, ETb_ave, ETb_std, E/n,  ET, Eexact, Nw)
+                %6d Walkers \n", idmc, τ, Eb_ave, Eb_std, ETb_ave, ETb_std, E/Nw,  ET, Eexact, Nw)
             
             open(Efile,"a") do f
                 println(f,τ," ",Eb_ave," ",Eb_std," ",Eexact," ",Nw)
