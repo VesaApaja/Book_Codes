@@ -45,8 +45,8 @@ struct AtomicOrbital{A<:AbstractString, B<:AbstractString, T<:Number, Z<:Number}
     orbital_type ::B
     n            ::Int
     l            ::Int
-    exponents    ::AbstractVector{T}
-    coefficients ::AbstractVector{Z}
+    exponents    ::Vector{T}
+    coefficients ::Vector{Z}
     spin         ::A
 end
 
@@ -67,7 +67,7 @@ function DD(ao::AtomicOrbital, R::MMatrix{dim,N,Float64}) where {dim, N}
 end
 
 struct JastrowParameters{T<:Number}
-    param ::AbstractVector{T}
+    param ::Vector{T}
 end
 
 struct WfParams
