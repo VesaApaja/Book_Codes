@@ -40,27 +40,23 @@ function set_orb(orb::Function, ∇orb ::Function, ∇2orb ::Function)
     @show(orb,∇orb,∇2orb)
 end
 
-
-function init(basis_set ::String)
-    STO_sets  = ["STO", "STO_Dzeta", "STO_Tzeta", "STO_EMA_VB1", "STO_EMA_VB2", "STO_EMA_VB3"]
+function init(basis_set::String)
     if basis_set == "Hydrogenic"
-        Zeff = convert(Float64,Z)
-        orb = H_orb
-        ∇orb = ∇H_orb
-        ∇2orb = ∇2H_orb            
-    elseif occursin("STO", basis_set)
-        orb = STO_orb
-        ∇orb = ∇STO_orb
-        ∇2orb = ∇2STO_orb
+        set_orb(H_orb, ∇H_orb, ∇2H_orb)
+
+    elseif startswith(basis_set, "STO")
+        set_orb(STO_orb, ∇STO_orb, ∇2STO_orb)
+
     else
-        error("SlaterDeterminants: Unknown orbital type, try Hydrogenic or STO, STO_Dzeta, STO_soemthing")
+        error("Unknown orbital basis: $basis_set")
     end
-    set_orb(orb,∇orb,∇2orb)
 end
+
+
 
 # Slater determinant primitives
 
-@inline function Slater_up(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
+@inline function Slater_up_old(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
     Nup = length(ups)
 
     dtype = eltype(orb(R[:,1], ups[1]))
@@ -74,9 +70,62 @@ end
     d
 end
 
+@inline function Slater_up(R::MMatrix{dim,N,Float64}, ups) where {dim,N}
+    T = Float64
+
+    for ao in ups
+        T = promote_type(T, eltype(ao.exponents), eltype(ao.coefficients))
+    end
+
+    Slater_up_kernel(R, ups, T, orb_ref[])
+end
+
+function Slater_up_kernel(R::MMatrix{dim,N,Float64}, ups, ::Type{T}, orbital_function::F) where {dim,N,T,F}
+
+    Nup = length(ups)
+    d = Matrix{T}(undef, Nup, Nup)
+
+    @inbounds for (k,ao) in enumerate(ups)
+        for i in 1:Nup
+            d[k,i] = orbital_function(R[:,i], ao)
+        end
+    end
+
+    return d
+end
+
+@inline function Slater_do(R::MMatrix{dim,N,Float64}, ups) where {dim,N}
+    T = Float64
+
+    for ao in ups
+        T = promote_type(T, eltype(ao.exponents), eltype(ao.coefficients))
+    end
+
+    Slater_do_kernel(R, ups, T, orb_ref[])
+end
 
 
-@inline function Slater_do(R ::MMatrix{dim,N,Float64}, dos) where {dim, N} 
+function Slater_do_kernel(
+    R::MMatrix{dim,N,Float64},
+    dos,
+    ::Type{T},
+    orbital_function::F
+) where {dim,N,T,F}
+
+    Ndo = length(dos)
+    Nup = N-Ndo
+    d = Matrix{T}(undef, Ndo, Ndo)
+
+    @inbounds for (k,ao) in enumerate(dos)
+        for i in 1:Ndo
+            d[k,i] = orbital_function(R[:,i+Nup], ao)
+        end
+    end
+    return d
+end
+
+
+@inline function Slater_do_old(R ::MMatrix{dim,N,Float64}, dos) where {dim, N} 
 
     Ndo = length(dos)
     Nup = N-Ndo
@@ -94,8 +143,12 @@ end
 
 
 @inline function D_up(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
-    d = Slater_up(R, ups)
     Nup = length(ups)
+    if Nup==0
+        D_up = 1.0 
+        return D_up
+    end
+    d = Slater_up(R, ups)
     if Nup==1
         D_up = d[1,1]
     elseif Nup==2
@@ -128,85 +181,161 @@ end
 
 # 2*nabla|D|/|D| spin up
 
-@inline function F_up(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
-    Nup = length(ups)
-    
-    F = Matrix{Number}(undef,dim,N)
-    for i in 1:N
-        for k in 1:dim
-            F[k,i] = 0.0
-        end
-    end
-    
-    D_up_inv = get_D_up_inv(R, ups)
-    for i ∈ 1:Nup # coordinate index
-        for (k,ao) in enumerate(ups)
-            F[:,i] += ∇orb(R[:,i], ao) * D_up_inv[i,k]
-        end
-    end
-    F=2F
+@inline function F_up(R::MMatrix{dim,N,Float64}, ups) where {dim,N}
+
+    Dinv = get_D_up_inv(R, ups)
+
+    return F_up_kernel(R, ups, Dinv, ∇orb_ref[])
 end
 
 
+function F_up_kernel(R::MMatrix{dim,N,Float64}, ups, Dinv::AbstractMatrix{T}, gradient_function::G) where {dim,N,T,G}
 
+    Nup = length(ups)
+    F = zeros(T, dim, N)
+
+    @inbounds for i in 1:Nup
+        ri = R[:,i]
+
+        for (k,ao) in enumerate(ups)
+            g = gradient_function(ri, ao)
+            weight = 2 * Dinv[i,k]
+
+            for d in 1:dim
+                F[d,i] += weight * g[d]
+            end
+        end
+    end
+
+    return F
+end
 
 # 2*nabla|D|/|D| spin down 
-@inline function F_do(R ::MMatrix{dim,N,Float64}, dos) where {dim, N} 
+@inline function F_do(R::MMatrix{dim,N,Float64}, dos) where {dim,N}
+
+    Dinv = get_D_do_inv(R, dos)
+
+    return F_do_kernel(R, dos, Dinv, ∇orb_ref[])
+end
+
+function F_do_kernel(R::MMatrix{dim,N,Float64}, dos, Dinv::AbstractMatrix{T}, gradient_function::G) where {dim,N,T,G}
+
     Ndo = length(dos)
     Nup = N-Ndo
+    F = zeros(T, dim, N)
 
-    
-    F = Matrix{Number}(undef,dim,N)
-    for i in 1:N
-        for k in 1:dim
-            F[k,i] = 0.0
-        end
-    end
-   
-    D_do_inv = get_D_do_inv(R, dos)
-    for i ∈ Nup+1:N # coordinate index
+    @inbounds for i in Nup+1:N
+        ri = R[:,i]
+
         for (k,ao) in enumerate(dos)
-            F[:,i] += ∇orb(R[:,i], ao) * D_do_inv[i-Nup,k]
+            g = gradient_function(ri, ao)
+            weight = 2 * Dinv[i-Nup,k]
+            for d in 1:dim
+                F[d,i] += weight * g[d]
+            end
         end
     end
-    F=2F    
+
+    return F
 end
 
 
+@inline function get_D_up_inv(R::MMatrix{dim,N,Float64}, ups) where {dim,N}
 
-@inline function get_D_up_inv(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
     d = Slater_up(R, ups)
     Nup = length(ups)
-    if Nup==1
-        D_up_inv = 1/d[1,1]
-    elseif Nup==2
-        D_up_inv = [d[2,2] -d[1,2]; -d[2,1] d[1,1]] ./ (d[1,1]*d[2,2]-d[2,1]*d[1,2])
+
+    if Nup == 1
+        dinv = similar(d)
+        dinv[1,1] = inv(d[1,1])
+
+    elseif Nup == 2
+        a = d[1,1]
+        b = d[1,2]
+        c = d[2,1]
+        e = d[2,2]
+
+        det = a*e - b*c
+
+        dinv = similar(d)
+        dinv[1,1] =  e/det
+        dinv[1,2] = -b/det
+        dinv[2,1] = -c/det
+        dinv[2,2] =  a/det
+
     else
-        D_up_inv = inv(d)
+        dinv = inv(d)
     end
-    D_up_inv
+
+    return dinv
 end
 
-@inline function get_D_do_inv(R ::MMatrix{dim,N,Float64}, dos) where {dim, N} 
-    Ndo = length(dos)
-    if Ndo==0
-        D_do_inv = 1.0
-        return D_do_inv
-    end
+@inline function get_D_do_inv(R::MMatrix{dim,N,Float64}, dos) where {dim,N}
+
     d = Slater_do(R, dos)
-    if Ndo==1
-        D_do_inv = 1/d[1,1]
-    elseif Ndo==2
-        D_do_inv = [d[2,2] -d[1,2]; -d[2,1] d[1,1]] ./ (d[1,1]*d[2,2]-d[2,1]*d[1,2])
+    Ndo = length(dos)
+    Nup = N-Ndo
+    
+    if Ndo == 1
+        dinv = similar(d)
+        dinv[1,1] = inv(d[1,1])
+
+    elseif Ndo == 2
+        a = d[1,1]
+        b = d[1,2]
+        c = d[2,1]
+        e = d[2,2]
+
+        det = a*e - b*c
+
+        dinv = similar(d)
+        dinv[1,1] =  e/det
+        dinv[1,2] = -b/det
+        dinv[2,1] = -c/det
+        dinv[2,2] =  a/det
+
     else
-        D_do_inv = inv(d)
+        dinv = inv(d)
     end
-    D_do_inv
+
+    return dinv
+end
+
+
+
+@inline function ∇2_up(
+    R::MMatrix{dim,N,Float64}, ups
+) where {dim,N}
+
+    Dinv = get_D_up_inv(R, ups)
+
+    return ∇2_up_kernel(R, ups, Dinv, ∇2orb_ref[])
+end
+
+
+function ∇2_up_kernel(
+    R::MMatrix{dim,N,Float64},
+    ups,
+    Dinv::AbstractMatrix{T},
+    lap_function::F
+) where {dim,N,T,F}
+
+    lap = zero(T)
+
+    @inbounds for i in 1:length(ups)
+        ri = R[:,i]
+
+        for k in eachindex(ups)
+            lap += lap_function(ri, ups[k]) * Dinv[i,k]
+        end
+    end
+
+    return lap
 end
 
 
 # ∇^2 |D_up| / |D_up|
-@inline function ∇2_up(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
+@inline function ∇2_up_old(R ::MMatrix{dim,N,Float64}, ups) where {dim, N} 
    
     Nup = length(ups)   
     D_up_inv = get_D_up_inv(R, ups)
