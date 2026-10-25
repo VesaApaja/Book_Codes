@@ -42,6 +42,7 @@ This directory contains various DMC programs and related utilities.
 
         - Similarly for double-zeta STO basis (basis_set=STO_Dzeta) 
 		and triple-zeta basis (basis_set=STO_Tzeta) 
+		- October 2026: normalization of STO orbitals were changed to more closely follow the standard. All optimized data files were modified accordingly. The STO data in the book use the old normalization, hence the differences.  
 	
 	- `Atom_Slater_Jastrow_optimization.jl` 
 		- optimization of basis set parameters using initial parameters in `atom_data/`
