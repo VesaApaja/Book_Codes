@@ -150,148 +150,176 @@ end
 end
 =#
 
+
 # normalization of radial STO
-@inline norm_STO(n,ζ) = sqrt.( (2*ζ).^(n+1)/factorial(2n) )
+@inline function norm_STO(n, l, ζ)
+    z32 = ζ * sqrt(ζ)
+
+    if n == 1 && l == 0       # 1s
+        return z32 / sqrt(π)
+    elseif n == 2 && l == 0   # 2s
+        return ζ*z32 / sqrt(3π)
+    elseif n == 2 && l == 1   # 2p
+        return ζ*z32 / sqrt(π)
+    else
+        error("STO normalization not implemented")
+    end
+end
+
+
+# this was slightly off, n+1 -> 2n+1
+# doesn't really matter that much, optimization changes the overall coefficient to comply
+# @inline norm_STO(n,ζ) = sqrt.( (2*ζ).^(n+1)/factorial(2n) )
 
 # Orbitals
 # ========
-@inline function orb(rvec ::MVector, ao ::AtomicOrbital)
-        
+
+@inline function orb(rvec::MVector, ao::AtomicOrbital)
     r = norm(rvec)
-    x,y,z = rvec
-    n = ao.n
-    ζ = ao.exponents
-    c = ao.coefficients
-    nor = norm_STO(n,ζ)
-    
-    
-    if ao.orbital_type =="1s"
-        orb = sum(@. c * nor * exp(-ζ*r))
-    elseif ao.orbital_type =="2s"
-        orb = sum(@. c * nor * r * exp(-ζ*r))
-    elseif ao.orbital_type =="2px"
-        orb = sum(@. c * nor * x * exp(-ζ*r))
-    elseif ao.orbital_type =="2py"
-        orb = sum(@. c * nor * y * exp(-ζ*r))
-    elseif ao.orbital_type =="2pz"
-        orb = sum(@. c * nor * z * exp(-ζ*r))
-    else
-        error("orbital not implemented")
-    end    
-    orb
-end
 
-
-
-
-# ∂/∂r R_nl(r) = ((n-1)/r-ζ) R_{nl}(r)
-@inline function ∇orb(rvec ::MVector, ao::AtomicOrbital)
-    # ∇orb[:,k] is ∇orb kth component
-    r = norm(rvec)
-    x,y,z = rvec
-    n = ao.n
-    ζ = ao.exponents
-    c = ao.coefficients
-    nor = norm_STO(n,ζ)
-    cexpo =  @. c * nor * exp(-ζ*r)
-    
-    if ao.orbital_type =="1s"
-        # orb = c * nor * exp(-ζ*r)
-        ∇orb = sum(cexpo .* (-ζ) ) * rvec/r
-    elseif ao.orbital_type =="2s"
-        # orb = c * nor * r * exp(-ζ*r)
-        ∇orb = sum(cexpo .* (1 .- ζ.*r)) * rvec/r
-    elseif ao.orbital_type =="2px"
-        # orb = c * nor * x * exp(-ζ*r)
-        ∇orb = sum(cexpo) .* [1,0,0] + sum(cexpo*x .* (-ζ))*rvec/r
-    elseif ao.orbital_type =="2py"
-        # orb = @. c * nor * y * exp(-ζ*r)
-        ∇orb = sum(cexpo) .* [0,1,0] + sum(cexpo*y .* (-ζ))*rvec/r        
-    elseif ao.orbital_type =="2pz"
-        # orb = @. c * nor * z * exp(-ζ*r)
-        ∇orb = sum(cexpo) .* [0,0,1] + sum(cexpo*z .* (-ζ))*rvec/r
-    else
-        error("orbital not implemented")
-    end
-
-    
-    #=
-    println("-"^80)
-    @show ao.orbital_type 
-    @show ∇orb
-    h = 1.e-6
-    nugr = zeros(3)
-    f0 = orb(rvec ::MVector, ao ::AtomicOrbital)
-    for k in 1:3
-        rvec[k] += h
-        fp = orb(rvec ::MVector, ao ::AtomicOrbital)
-        nugr[k] = (fp-f0)/h
-        rvec[k] -= h
-    end
-    @show nugr
-    diff = ∇orb-nugr
-    @show diff
-    if any(i->i>1e-4, abs.(diff))
-        error("deviation")
-    end
-    =#
-    ∇orb
-end
-
-# ∇^2 R_{nl}(r) =  (n(n-1)/r^2 - 2nζ/r + ζ^2) R_{nl}(r)
-# ∇^2 Y{lm}(θ,ϕ) = -l(l+1)/r^2 Y Y{lm}(θ,ϕ)  
-@inline function ∇2orb(rvec ::MVector, ao::AtomicOrbital)
-    r = norm(rvec)
-    x,y,z = rvec
-    θ = acos(z/r);
-    ϕ = atan(y/x);
-
-    ζ = ao.exponents
-    c = ao.coefficients
     n = ao.n
     l = ao.l
-    NSTO =  norm_STO(n,ζ)
+    ζ = ao.exponents
+    c = ao.coefficients
+    t = ao.orbital_type
+
+    @inbounds radial =
+        c[1] * norm_STO(n, l, ζ[1]) * exp(-ζ[1]*r)
     
-    if ao.orbital_type =="1s"
-        ∇2orb = sum(@. NSTO*c*exp(-ζ*r) *(ζ^2 - ζ*2/r))        
-    elseif ao.orbital_type =="2s"
-        ∇2orb =  sum(@.  (2/r^2 - 4*ζ/r + ζ^2) * r*NSTO*c*exp(-ζ*r))
-    elseif ao.orbital_type =="2px"
-        ncexpo = @. NSTO*c*exp(-ζ*r)
-        t = x * (ζ.^2 .- 4ζ/r)
-        ∇2orb = sum(ncexpo .* t)
-    elseif ao.orbital_type =="2py"
-        ncexpo = @. NSTO*c*exp(-ζ*r)
-        t = y * (ζ.^2 .- 4ζ/r)
-        ∇2orb = sum(ncexpo .* t)
-    elseif ao.orbital_type =="2pz"
-        ncexpo = @. NSTO*c*exp(-ζ*r)
-        t = z * (ζ.^2 .- 4ζ/r)
-        ∇2orb = sum(ncexpo .* t)
+    @inbounds for k in 2:length(ζ)
+        radial += c[k] * norm_STO(n, l, ζ[k]) * exp(-ζ[k]*r)
+    end
+    
+    # Angular/radial prefactor
+    factor = if t == "1s"
+        one(r)
+    elseif t == "2s"
+        r
+    elseif t == "2px"
+        rvec[1]
+    elseif t == "2py"
+        rvec[2]
+    elseif t == "2pz"
+        rvec[3]
     else
-        @show  ao.orbital_type
-        error("Not implemented")
+        error("Unknown orbital type: $t")
     end
 
-    #=
-    println("-"^80)
-    @show ao.orbital_type 
-    @show ∇2orb
-    h = 1.e-4
-    nu_∇2 = 0.0
-    for k in 1:3
-        f0 = orb(rvec, ao)
-        rvec[k] += h
-        fp = orb(rvec, ao)
-        rvec[k] -= 2h
-        fm = orb(rvec, ao)
-        nu_∇2 += (fm- 2*f0 +fp)/(h^2)
-        rvec[k] += h
+    return factor * radial
+end
+
+
+@inline function ∇orb(rvec::MVector{3}, ao::AtomicOrbital)
+
+    r = norm(rvec)
+    x, y, z = rvec
+
+    n = ao.n
+    ζ = ao.exponents
+    c = ao.coefficients
+
+    denom = factorial(2n)
+
+    # First primitive; establishes numeric type,
+    # including ForwardDiff.Dual when appropriate.
+    @inbounds begin
+        ζk = ζ[1]
+        a = c[1] * norm_STO(n, ao.l, ζk) * exp(-ζk*r)
+        A = a
+        B = ζk*a
+
+        for k in 2:length(ζ)
+            ζk = ζ[k]
+            a = c[k] * norm_STO(n, ao.l, ζk) * exp(-ζk*r)
+            A += a
+            B += ζk*a
+        end
     end
-    @show nu_∇2 
-    =#
-    
-    ∇2orb
+
+    t = ao.orbital_type
+    q = B/r
+
+    if t == "1s"
+        g = -q
+        return SVector(g*x, g*y, g*z)
+
+    elseif t == "2s"
+        g = A/r - B
+        return SVector(g*x, g*y, g*z)
+
+    elseif t == "2px"
+        g = -x*q
+        return SVector(A + g*x, g*y, g*z)
+
+    elseif t == "2py"
+        g = -y*q
+        return SVector(g*x, A + g*y, g*z)
+
+    elseif t == "2pz"
+        g = -z*q
+        return SVector(g*x, g*y, A + g*z)
+
+    else
+        error("Unknown orbital type: $t")
+    end
+end
+
+
+
+# ∇^2 R_{nl}(r) =  (n(n-1)/r^2 - 2nζ/r + ζ^2) R_{nl}(r)
+@inline function ∇2orb(rvec::MVector{3}, ao::AtomicOrbital)
+
+    r = norm(rvec)
+
+    n = ao.n
+    ζ = ao.exponents
+    c = ao.coefficients
+
+    denom = factorial(2n)
+
+    # Accumulate A, B and C.
+    # First primitive establishes the numeric type,
+    # including ForwardDiff.Dual when applicable.
+    @inbounds begin
+        ζk = ζ[1]        
+        a = c[1] * norm_STO(n, ao.l, ζk) * exp(-ζk*r)
+
+        A = a
+        B = ζk*a
+        C = ζk*ζk*a
+
+        for k in 2:length(ζ)
+            ζk = ζ[k]
+            a = c[k] * norm_STO(n, ao.l, ζk) * exp(-ζk*r)
+
+            A += a
+            B += ζk*a
+            C += ζk*ζk*a
+        end
+    end
+
+    invr = inv(r)
+
+    t = ao.orbital_type
+
+    if t == "1s"
+        return C - 2*B*invr
+
+    elseif t == "2s"
+        return r*C - 4*B + 2*A*invr
+
+    elseif t == "2px"
+        return rvec[1] * (C - 4*B*invr)
+
+    elseif t == "2py"
+        return rvec[2] * (C - 4*B*invr)
+
+    elseif t == "2pz"
+        return rvec[3] * (C - 4*B*invr)
+
+    else
+        error("Unknown orbital type: $t")
+    end
 end
 
 
