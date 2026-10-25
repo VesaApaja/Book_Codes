@@ -15,7 +15,7 @@ using StaticArrays
 using Statistics
 using ForwardDiff: gradient as ADgrad 
 # dot product:
-using LinearAlgebra: ⋅  
+using LinearAlgebra: ⋅ , dot 
 
 # slightly faster (?) norm 
 @inline norm(x) = sqrt(sum(abs2,x))
@@ -72,12 +72,12 @@ if N>1
 end
 
 # keep Jastrow α=0 to not contaminate STO basis 
-jpara.param[1] == 0.0
+jpara.param[1] = 0.0
 # keep Jastrow α12 = 1.0 because of cusp condition; only if there are more than one electron
 if N>1
-    jpara.param[4] == 1.0
+    jpara.param[4] = 1.0
 else
-    jpara.param[4] == 0.0
+    jpara.param[4] = 0.0
 end
 
 
@@ -193,24 +193,30 @@ end
     DDsum = 0.0
     for (i,aos) in enumerate(lc.orbitals)        
         ups = aos[lc_ups[i]]
-        dos = aos[lc_dos[i]]       
+        dos = aos[lc_dos[i]]
+        # use concrete types
+        ups = Vector{typeof(ups[1])}(ups)
+        dos = Vector{typeof(dos[1])}(dos)
+
         # see comments before F(R)           
         DD_occu = det_coeff(lc, i) * D_up(R, ups) * D_do(R, dos)
         TL += -D* DD_occu*( ∇2_up(R, ups) + ∇2_do(R, dos) )
-        if i==1
-            # initialize the first time, keeps AD happy
-            ∇DD = DD_occu *( F_up(R, ups) + F_do(R, dos) )
+
+        # fused broadcasting
+        Fu = F_up(R, ups)
+        Fd = F_do(R, dos)       
+        if i == 1
+            ∇DD = @. DD_occu * (Fu + Fd)
         else
-            ∇DD .+= DD_occu *( F_up(R, ups) + F_do(R, dos) )
+            @. ∇DD += DD_occu * (Fu + Fd)
         end
+
         DDsum +=  DD_occu
     end
     TL /= DDsum
-    ∇DD ./= (DDsum*2)
-    
-    ∇J   = F_J(R, jpara)/2     # ∇ e^J/J = ∇J = F/2
-    
-    TL += -D*2* ∇DD ⋅ ∇J
+    ∇DD .*= inv(2DDsum)
+    # ∇ e^J/e^J = ∇J ; FJ := 2 ∇J
+    FJ   = F_J(R, jpara)     
     
     α, β1, β2, α12 = jpara.param
     ∇2J  = 0.0
@@ -220,8 +226,7 @@ end
         VL += -Z/rk
         for i in k+1:N
             ski = s[k,i]
-            rki_vec = R[:,k]-R[:,i] 
-            rki = norm(rki_vec) 
+            rki = norm(R[:,k]-R[:,i]) 
             VL += 1/rki
             if ski==2
                 ∇2J += 4* α12/(ski*(1+β1*rki)^3)/rki
@@ -229,8 +234,8 @@ end
                 ∇2J += 4* α12/(ski*(1+β2*rki)^3)/rki
             end
         end        
-    end    
-    TL += -D * ( sum(∇J.^2) + ∇2J ) 
+    end
+    TL += -D * ( dot(∇DD, FJ) + 0.25 * sum(abs2, FJ) +  ∇2J )
     EL = TL + VL    
     EL    
 end
@@ -748,6 +753,7 @@ function main()
     # ---------------------
     
 
+    
     #
     # Optimization
     #
@@ -958,8 +964,7 @@ function main()
     end
     
     println("Optimization done")
-    println("Results in file",optfile*"_tmp")
-    println("Move it to ",optfile," if you're satisfied")
+    println("Use ",optfile," if you're satisfied")
     println("Running a few VMC steps")
     run_VMC!(walker, vmc_params)
 end
