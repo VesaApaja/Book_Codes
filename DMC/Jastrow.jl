@@ -8,7 +8,7 @@ using StaticArrays
 push!(LOAD_PATH,".")
 using Common
 
-export φ_T_J,  lnφ_T_J, F_J
+export φ_T_J,  lnφ_T_J, F_J, F_J_old
 
 # slightly faster norm 
 @inline norm(x) = sqrt(sum(abs2,x))
@@ -40,10 +40,68 @@ end
 end
 
 
+@inline function F_J(
+    R::MMatrix{dim,N,Float64},
+    jpara::JastrowParameters,
+    s::Matrix{Int64}
+) where {dim,N}
+
+    α, β1, β2, α12 = jpara.param
+
+    # Preserve ForwardDiff.Dual when present.
+    T = promote_type(eltype(R), eltype(jpara.param))
+    F = Matrix{T}(undef, dim, N)
+
+    # Electron-nucleus contributions
+    @inbounds for k in 1:N
+
+        rk2 = 0.0
+        for d in 1:dim
+            rk2 += R[d,k]^2
+        end
+
+        rk = sqrt(rk2)
+        factor = -2*α/rk
+
+        for d in 1:dim
+            F[d,k] = factor * R[d,k]
+        end
+    end
+
+    # Electron-electron contributions
+    @inbounds for k in 1:N-1
+        for i in k+1:N
+
+            rki2 = 0.0
+            for d in 1:dim
+                Δ = R[d,k] - R[d,i]
+                rki2 += Δ*Δ
+            end
+
+            rki = sqrt(rki2)
+
+            ski = s[k,i]
+            β = ski == 2 ? β1 : β2
+
+            factor = 2*α12 /
+                (ski * rki * (1 + β*rki)^2)
+
+            for d in 1:dim
+                contribution = factor * (R[d,k] - R[d,i])
+
+                F[d,k] += contribution
+                F[d,i] -= contribution
+            end
+        end
+    end
+
+    return F
+end
+
 
 # Jastrow drift
 # F = 2∇J = 2∇_k φ_T /φ_T, Jastrow φ_T = e^J
-@inline function F_J(R ::MMatrix{dim,N,Float64}, jpara::JastrowParameters, s ::Matrix{Int64})  where {dim, N}
+@inline function F_J_old(R ::MMatrix{dim,N,Float64}, jpara::JastrowParameters, s ::Matrix{Int64})  where {dim, N}
     α, β1, β2, α12 = jpara.param
     ∇J = Array{eltype(jpara.param),2}(undef,dim,N)
     for i in 1:N
