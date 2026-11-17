@@ -364,7 +364,7 @@ end
 
 
 @inline function V(R ::MMatrix, N ::Int64, Z ::Int64) ::Float64
-    V = 0.0 ::Float64
+    V::Float64 = 0.0 
     for k in 1:N
         rk  = norm(R[:,k])
         V += -Z/rk
@@ -393,10 +393,10 @@ end
 function spins(i ::Int64, j ::Int64, Nup ::Int64, Ndo ::Int64) ::Int64    
     if (i<= Nup && j>Nup) || (i> Nup && j<=Nup)
         # anti-parallel spins                
-        fac = 2 ::Int64    
+        fac = 2   
     else
         # parallel spins
-        fac = 4 ::Int64    
+        fac = 4     
     end
     fac
 end
