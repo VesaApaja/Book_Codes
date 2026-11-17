@@ -822,6 +822,7 @@ function main()
                 @info "updating gradients Ψ_is EL_is and local energies ELs using current wf_params"
                 # NB: don't change walker Ψ here, it must remain the one used in sampling configs
                 #     otherwise the correlated EL is wrong
+                #=
                 for iw ∈ 1:Nw
                     R = walker[iw].R                    
                     Ψ_is[:,iw]  = G_i_AD(R, wf_params, φ_T)              
@@ -831,6 +832,20 @@ function main()
                     #EL_is[:,iw]= G_i_numerical(R, wf_params, EL)
                     ELs[iw] =  EL(R, wf_params)                    
                 end
+                =#
+                @info "EXPERIMENTAL! Using approximate E_i = 2 Ψ_i/ψ ( E_L- Ebar)"
+                # The slow evaluation of local energy derivatives is replaced by a fast approximate form
+                for iw ∈ 1:Nw
+                    R = walker[iw].R
+                    ELs[iw] = EL(R, wf_params)
+                    Ψ_is[:,iw]  = G_i_AD(R, wf_params, φ_T) 
+                end
+                Ebar = sum(ELs)/Nw - 10.0  # NB: lowering Ebar may speed up convergence
+                for iw ∈ 1:Nw
+                    R = walker[iw].R
+                    EL_is[:,iw] = 2*Ψ_is[:,iw]/walker[iw].Ψ *(ELs[iw] - Ebar) #NB: using old walker[iw].Ψ stabilizes optimization
+                end
+                
             end
             
             if ok
