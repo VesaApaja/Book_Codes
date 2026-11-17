@@ -38,7 +38,8 @@ function get_wave_function_params(trial::Symbol)
         return (α = 27/16, α12 = 0.0, β = 0.0)
     elseif trial === :cusp_condition_parameters 
         # cusp condition values:
-        return (α = 2.0, α12 = 0.5, β = 0.0)
+        return (α = 2.0, α12 = 0.5, β = 0.143261)
+        # 
     elseif trial === :three_parameters 
         return (α = 1.0, α12 = 0.5, β = 0.1)
     elseif trial === :initial_parameters_for_optimization
