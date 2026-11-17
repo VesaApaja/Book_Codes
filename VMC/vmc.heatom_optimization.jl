@@ -14,13 +14,11 @@ H = -1/2* (nabla_1^2 + nabla_2^2) - 2/r1 - 2/r2 + 1/r12
 using Printf
 using StaticArrays
 using Statistics
-using LaTeXStrings
 
 using Plots
 
 using Optimization, OptimizationNLopt, NLopt
 using Random
-#using PRIMA # May 2025: requires executable stack, which is disabled in many systems for security reasons
 
 # local modules:
 push!(LOAD_PATH,".")
