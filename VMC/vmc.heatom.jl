@@ -23,7 +23,7 @@ using QMC_Statistics
 #
 const blocksize = 1000000   # data block size
 const Ntherm = 100         # thermalization steps
-const accuracy_goal = 2e-4
+const accuracy_goal = 2e-5
 
 
 mutable struct Walker
@@ -54,7 +54,8 @@ function main()
     println("===========")
     walker, vmc_params = init()
     # choose trial wave function parameters defined in Model_Heatom.jl
-    trial = :energy_optimized_parameters
+    #trial = :energy_optimized_parameters
+    trial = :cusp_condition_parameters 
     par = get_wave_function_params(trial)
     wf_params = (par.α, par.α12, par.β) # tuple
     @show wf_params 
@@ -94,7 +95,9 @@ function main()
     # init E measurement (QMC_Statistics)
     Estat = init_stat(1, blocksize)
     #
-    ivmc = 0
+    Emin::Float64 = 1e6
+    Emax::Float64 = -1e6
+    ivmc::Int = 0
     while true # until accuracy_goal is reached
         vmc_step!(walker.R, vmc_params, Ψ_par)
         walker.E = EL_par(walker.R)
@@ -105,15 +108,19 @@ function main()
         if ivmc%10 == 0                      
             adjust_step!(vmc_params)
         end
+
+        Emin = min(Emin, walker.E)
+        Emax = max(Emax, walker.E)
         # saving to file is slow
-        #open(filename,"a") do f
-        #    println(f,ivmc," ",E)
+        # open(filename,"a") do f
+        #    println(f,ivmc," ",walker.E)
         #end
         #
         # output when a block is full
         if Estat.finished            
             E_ave, E_std, E_inputvar2, Nb = get_stats(Estat)
-            @printf("VMC %15d E = %.10f <E> = %.10f ± %.10f\n",ivmc, walker.E,  E_ave, E_std)
+            @printf("VMC %15d E = %.10f <E> = %.10f ± %.10f   Emin = %.10f  Emax = %.10f\n",
+                    ivmc, walker.E,  E_ave, E_std, Emin, Emax)
 
             if Nb>10 && E_std < accuracy_goal
                 println("reached accuracy goal")
