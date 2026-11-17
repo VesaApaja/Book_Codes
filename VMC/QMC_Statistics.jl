@@ -1,144 +1,144 @@
+# Blocking statistics for scalar or vector QMC measurements.
 #
-# Routines for collecting measurement samples from QMC simultion
-# 
-# Initialization: For a single measured value,
-#    stat = init_stat(1, blocksize)
-# and for a measured array of ndata values,
-#    stat = init_stat(ndata, blocksize) 
-# When stat.finished is true, and one block is done, you can
-# pick up the QMC error estimate with
-#     average, std_err, input_σ2, Nblocks  = get_stats(stat) 
-# where input_σ2 is the variance^2 of the raw input data
+# Usage:
+#   stat = init_stat(1, 100)           # scalar observations
+#   stat = init_stat(3, 100)           # vector observations of length 3
+#   add_sample!(stat, observation)
+#   if stat.finished
+#       average, std_err, input_σ2, Nblocks, lastblock = get_stats(stat)
+#   end
 #
+# std_err is the standard error calculated from completed block means,
+# assuming blocks are sufficiently long to be approximately uncorrelated.
+# input_σ2 is the mean WITHIN-BLOCK population variance of the raw
+# observations, calculated separately for each vector component.
+# Incomplete blocks are not included in get_stats.
 
 module QMC_Statistics
 
 export init_stat, add_sample!, get_stats, t_Stat
 
 mutable struct t_StatData
-    n    ::Int64  
-    data ::Vector{Float64}
-    data2 ::Vector{Float64}
-    input_σ2 :: Float64
+    n::Int
+    data::Vector{Float64}       # running mean during sampling; completed block mean otherwise
+    data2::Vector{Float64}      # running sum of squared deviations (Welford's M2)
+    input_σ2::Vector{Float64}   # within-block variance of each component
 end
 
-mutable struct t_Stat    
-    nblocks   ::Int64
-    blocksize ::Int64
-    finished  ::Bool
-    sample    ::t_StatData
-    datablock :: Vector{t_StatData}
-    t_Stat() = new()
+mutable struct t_Stat
+    nblocks::Int
+    blocksize::Int
+    finished::Bool
+    sample::t_StatData
+    datablock::Vector{t_StatData}
 end
 
+function init_stat(datasize::Integer, blocksize::Integer; numblocks::Integer=100)
+    datasize > 0 || throw(ArgumentError("datasize must be positive"))
+    blocksize > 0 || throw(ArgumentError("blocksize must be positive"))
+    numblocks >= 0 || throw(ArgumentError("numblocks must be nonnegative"))
 
+    sample = t_StatData(0, zeros(datasize), zeros(datasize), zeros(datasize))
+    datablock = Vector{t_StatData}(undef, numblocks)
+    return t_Stat(0, Int(blocksize), false, sample, datablock)
+end
 
-function init_stat(datasize ::Int64, blocksize ::Int64; numblocks::Int64=100)
-    stat = t_Stat()
-    stat.blocksize = blocksize
-    stat.nblocks = 0    
-    stat.sample = t_StatData(0, zeros(datasize), zeros(datasize), 0.0)
-    # data blocks    
-    stat.datablock = Vector{t_StatData}(undef, numblocks) # was []
+# Add one scalar observation. The scalar interface is deliberately restricted
+# to datasize == 1 (avoids accidentally broadcasting a scalar to all channels).
+function add_sample!(stat::t_Stat, dat::Real)
+    length(stat.sample.data) == 1 ||
+        throw(DimensionMismatch("scalar observation requires datasize == 1"))
+    return _add_sample!(stat, (Float64(dat),))
+end
+
+# Add one vector observation; no temporary vector is allocated.
+function add_sample!(stat::t_Stat, dat::AbstractVector{<:Real})
+    length(dat) == length(stat.sample.data) ||
+        throw(DimensionMismatch("observation length must match datasize"))
+    return _add_sample!(stat, dat)
+end
+
+function _add_sample!(stat::t_Stat, dat)
+    s = stat.sample
+    n = s.n + 1
+
+    # Welford's numerically stable online mean and M2 update.
+    @inbounds for j in eachindex(s.data)
+        x = Float64(dat[j])
+        delta = x - s.data[j]
+        s.data[j] += delta / n
+        s.data2[j] += delta * (x - s.data[j])
+    end
+    s.n = n
     stat.finished = false
-    return stat
-end
 
-function add_sample!(stat ::t_Stat, dat)
-    stat.finished  = false
-
-    @. stat.sample.data  += dat
-    @. stat.sample.data2 += dat^2
-    stat.sample.n += 1
-    
-    if stat.sample.n == stat.blocksize
-        # one full block collected, move average to block data
-        # input data σ^2:
-        N = stat.sample.n
-        d2 = sum(stat.sample.data2)/N
-        d  = sum(stat.sample.data)/N
-        input_σ2 = d2-d^2
-        #
+    if n == stat.blocksize
         stat.nblocks += 1
         if stat.nblocks > length(stat.datablock)
-            old_size =  length(stat.datablock)
-            resize!(stat.datablock, old_size + 100) # unintialized elements in the end
-        end 
-        stat.datablock[stat.nblocks] = t_StatData(0, stat.sample.data./N, zeros(length(stat.sample.data)), input_σ2)
-        # old, see "was" in init_stat
-        #push!(stat.datablock,t_StatData(0, stat.sample.data./N, zeros(length(stat.sample.data)), input_σ2))        
-        @. stat.sample.data = 0
-        @. stat.sample.data2 = 0
-        stat.sample.n = 0
+            resize!(stat.datablock, length(stat.datablock) + 100)
+        end
+
+        # Population variance (M2/n), matching the original input_σ2 meaning.
+        input_var = similar(s.data2)
+        @inbounds for j in eachindex(input_var)
+            input_var[j] = max(0.0, s.data2[j] / n)
+        end
+        stat.datablock[stat.nblocks] = t_StatData(0, copy(s.data),
+                                                 Float64[], input_var)
+
+        fill!(s.data, 0.0)
+        fill!(s.data2, 0.0)
+        s.n = 0
         stat.finished = true
-    end  
+    end
+    return nothing
 end
 
-
-
-function get_stats(stat ::t_Stat)
+function get_stats(stat::t_Stat)
     N = stat.nblocks
-    if N==0
-        println("get_stats: no data")
-        return 0, 0, 0, 0
+    m = length(stat.sample.data)
+
+    # Always return five values; preserve scalar vs vector shape.
+    if N == 0
+        if m == 1
+            return NaN, NaN, NaN, 0, NaN
+        else
+            return fill(NaN, m), fill(NaN, m), fill(NaN, m), 0, fill(NaN, m)
+        end
     end
-    if length(stat.datablock[1].data)==1
-        ave_1, std_err_1, input_σ2_1, N_1 = get_stats_1(stat ::t_Stat)
-        return ave_1, std_err_1, input_σ2_1, N_1,  stat.datablock[N].data[1] 
+
+    ave = zeros(m)
+    input_var = zeros(m)
+    for i in 1:N
+        b = stat.datablock[i]
+        @inbounds for j in 1:m
+            ave[j] += b.data[j]
+            input_var[j] += b.input_σ2[j]
+        end
     end
-    ave = similar(stat.datablock[1].data) 
-    ave2 = similar(ave)
-    ave .= 0
-    ave2 .= 0
-    input_σ2 = 0.0
-    @simd for i = 1:N
-        d = stat.datablock[i].data
-        @. ave += d
-        @. ave2 += d^2
-        input_σ2 += stat.datablock[i].input_σ2 
-    end    
-    @. ave /= N
-    @. ave2 /= N
-    input_σ2 /= N
-    var = copy(ave)
-    var2 = copy(ave)
-    std_err = copy(ave)
-    @. var2 = abs(ave2 - ave^2)
-    @. var = sqrt(var2)    
-    if N==1
-        @. std_err = 0.0
-    else
-        @. std_err = var/sqrt(N-1) # corrected sample error
+    ave ./= N
+    input_var ./= N
+
+    # Stable second pass over block means.
+    std_err = fill(NaN, m) # with only one block, the error is undetermined
+    if N > 1
+        ss = zeros(m)
+        for i in 1:N
+            d = stat.datablock[i].data
+            @inbounds for j in 1:m
+                ss[j] += (d[j] - ave[j])^2
+            end
+        end
+        @inbounds for j in 1:m
+            std_err[j] = sqrt(ss[j] / (N * (N - 1)))
+        end
     end
-    return ave, std_err, input_σ2, N, stat.datablock[N].data 
+
+    lastblock = stat.datablock[N].data
+    if m == 1
+        return ave[1], std_err[1], input_var[1], N, lastblock[1]
+    end
+    return ave, std_err, input_var, N, copy(lastblock)
 end
 
-function get_stats_1(stat ::t_Stat)
-    N = stat.nblocks
-    if N==0
-        println("get_stats: no data")
-        return nothing
-    end
-    ave = 0.0 
-    ave2 = 0.0
-    input_σ2 = 0.0 
-    for i = 1:N
-        d = stat.datablock[i].data[1]
-        ave += d
-        ave2 += d^2
-        input_σ2 += stat.datablock[i].input_σ2 
-    end 
-    ave /= N
-    ave2 /= N
-    input_σ2 /= N
-    var2 = abs(ave2 - ave^2)
-    var = sqrt(var2)
-    if N==1
-        std_err = 0.0
-    else
-        std_err = var/sqrt(N-1) # corrected sample error
-    end
-    return ave, std_err, input_σ2, N
-end
-
-end
+end # module QMC_Statistics
